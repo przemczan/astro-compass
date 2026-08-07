@@ -1,0 +1,243 @@
+@file:OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
+
+package com.astroguider.ui.screens
+
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material3.Button
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SegmentedButton
+import androidx.compose.material3.SegmentedButtonDefaults
+import androidx.compose.material3.SingleChoiceSegmentedButtonRow
+import androidx.compose.material3.Slider
+import androidx.compose.material3.Text
+import androidx.compose.material3.TopAppBar
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
+import com.astroguider.astro.Angle
+import com.astroguider.guiding.TelescopeAxis
+import com.astroguider.location.ObserverLocation
+import com.astroguider.sensors.OrientationSensor
+import com.astroguider.sensors.SensorSource
+import com.astroguider.settings.AppPreferences
+import com.astroguider.ui.theme.AppTheme
+
+@Composable
+fun SettingsScreen(
+    preferences: AppPreferences,
+    orientationSensor: OrientationSensor,
+    resolvedLocation: ObserverLocation?,
+    onBack: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Scaffold(
+        modifier = modifier,
+        topBar = {
+            TopAppBar(
+                title = { Text("Settings") },
+                navigationIcon = {
+                    IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back") }
+                },
+            )
+        },
+    ) { padding ->
+        Column(
+            Modifier.padding(padding).verticalScroll(rememberScrollState()).padding(16.dp),
+        ) {
+            SectionTitle("Location")
+            LocationSection(preferences, resolvedLocation)
+
+            HorizontalDivider(Modifier.padding(vertical = 16.dp))
+            SectionTitle("Telescope axis")
+            TelescopeAxisSection(preferences)
+
+            HorizontalDivider(Modifier.padding(vertical = 16.dp))
+            SectionTitle("On-target tolerance")
+            ToleranceSection(preferences)
+
+            HorizontalDivider(Modifier.padding(vertical = 16.dp))
+            SectionTitle("Deep-sky magnitude limit")
+            MagnitudeLimitSection(preferences)
+
+            HorizontalDivider(Modifier.padding(vertical = 16.dp))
+            SectionTitle("Appearance")
+            ThemeSection(preferences)
+
+            HorizontalDivider(Modifier.padding(vertical = 16.dp))
+            SectionTitle("Data sources & licenses")
+            Text(
+                "Stars: HYG Database (Astronomy Nexus / David Nash), CC BY-SA 4.0.\n" +
+                    "Deep sky: OpenNGC (Mattia Verga), CC BY-SA 4.0.",
+                style = MaterialTheme.typography.bodySmall,
+            )
+
+            HorizontalDivider(Modifier.padding(vertical = 16.dp))
+            SectionTitle("Advanced")
+            AdvancedSection(preferences, orientationSensor)
+        }
+    }
+}
+
+@Composable
+private fun SectionTitle(text: String) {
+    Text(text, style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(bottom = 8.dp))
+}
+
+@Composable
+private fun LocationSection(preferences: AppPreferences, resolvedLocation: ObserverLocation?) {
+    val manualLocation by preferences.manualLocation.collectAsState()
+    // Keyed on manualLocation so an external change (e.g. clearing it elsewhere) resyncs the
+    // checkbox, but a local toggle in between persists without being fought by recomposition.
+    var useCurrentLocation by remember(manualLocation) { mutableStateOf(manualLocation == null) }
+
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Checkbox(
+            checked = useCurrentLocation,
+            onCheckedChange = { checked ->
+                useCurrentLocation = checked
+                if (checked) preferences.setManualLocation(null)
+            },
+        )
+        Text("Use current location (GPS)", style = MaterialTheme.typography.bodyMedium)
+    }
+
+    if (useCurrentLocation) {
+        Text(
+            resolvedLocation?.let {
+                "Current: ${formatDegrees(it.latitude.degrees)}°, ${formatDegrees(it.longitude.degrees)}°"
+            } ?: "No location available yet",
+            style = MaterialTheme.typography.bodyMedium,
+            modifier = Modifier.padding(top = 4.dp),
+        )
+    } else {
+        val prefill = manualLocation ?: resolvedLocation
+        var latText by remember { mutableStateOf(prefill?.latitude?.degrees?.toString() ?: "") }
+        var lonText by remember { mutableStateOf(prefill?.longitude?.degrees?.toString() ?: "") }
+
+        Row(Modifier.fillMaxWidth().padding(top = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedTextField(latText, { latText = it }, label = { Text("Latitude") }, modifier = Modifier.weight(1f), singleLine = true)
+            OutlinedTextField(lonText, { lonText = it }, label = { Text("Longitude") }, modifier = Modifier.weight(1f), singleLine = true)
+        }
+        Row(Modifier.fillMaxWidth().padding(top = 8.dp), horizontalArrangement = Arrangement.Center) {
+            Button(onClick = {
+                val lat = latText.toDoubleOrNull()?.coerceIn(-90.0, 90.0)
+                val lon = lonText.toDoubleOrNull()?.coerceIn(-180.0, 180.0)
+                if (lat != null && lon != null) {
+                    preferences.setManualLocation(ObserverLocation(Angle.ofDegrees(lat), Angle.ofDegrees(lon)))
+                }
+            }) { Text("Save location") }
+        }
+    }
+}
+
+@Composable
+private fun TelescopeAxisSection(preferences: AppPreferences) {
+    val current by preferences.telescopeAxis.collectAsState()
+    var expanded by remember { mutableStateOf(false) }
+    Row {
+        OutlinedButton(onClick = { expanded = true }) { Text(current.label) }
+        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            TelescopeAxis.entries.forEach { axis ->
+                DropdownMenuItem(
+                    text = { Text(axis.label) },
+                    onClick = { preferences.setTelescopeAxis(axis); expanded = false },
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ToleranceSection(preferences: AppPreferences) {
+    val current by preferences.onTargetToleranceDegrees.collectAsState()
+    Text("${formatDegrees(current)}°", style = MaterialTheme.typography.bodyMedium)
+    Slider(
+        value = current.toFloat(),
+        onValueChange = { preferences.setOnTargetToleranceDegrees(it.toDouble()) },
+        valueRange = 0.1f..3.0f,
+    )
+}
+
+@Composable
+private fun MagnitudeLimitSection(preferences: AppPreferences) {
+    val current by preferences.magnitudeLimit.collectAsState()
+    Text("mag $current or brighter", style = MaterialTheme.typography.bodyMedium)
+    Slider(
+        value = current,
+        onValueChange = { preferences.setMagnitudeLimit(it) },
+        valueRange = 1f..16f,
+    )
+}
+
+@Composable
+private fun ThemeSection(preferences: AppPreferences) {
+    val current by preferences.appTheme.collectAsState()
+    SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+        val options = listOf<AppTheme?>(null, AppTheme.Light, AppTheme.Dark, AppTheme.Night)
+        options.forEachIndexed { index, theme ->
+            SegmentedButton(
+                selected = current == theme,
+                onClick = { preferences.setAppTheme(theme) },
+                shape = SegmentedButtonDefaults.itemShape(index, options.size),
+                label = { Text(theme?.name ?: "System") },
+            )
+        }
+    }
+}
+
+@Composable
+private fun AdvancedSection(preferences: AppPreferences, orientationSensor: OrientationSensor) {
+    val override by preferences.sensorSourceOverride.collectAsState()
+    val active = override ?: orientationSensor.activeSource
+    Text("Active sensor: ${active.name}", style = MaterialTheme.typography.bodyMedium)
+    Text(
+        "Gyroscope: ${orientationSensor.capabilities.hasGyroscope}, " +
+            "Magnetometer: ${orientationSensor.capabilities.hasMagnetometer}",
+        style = MaterialTheme.typography.bodySmall,
+        modifier = Modifier.padding(bottom = 8.dp),
+    )
+
+    var expanded by remember { mutableStateOf(false) }
+    Row {
+        OutlinedButton(onClick = { expanded = true }) { Text(override?.name ?: "Auto (recommended)") }
+        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            DropdownMenuItem(text = { Text("Auto (recommended)") }, onClick = { preferences.setSensorSourceOverride(null); expanded = false })
+            SensorSource.entries.forEach { source ->
+                DropdownMenuItem(
+                    text = { Text(source.name) },
+                    onClick = { preferences.setSensorSourceOverride(source); expanded = false },
+                )
+            }
+        }
+    }
+    Text(
+        "Takes effect the next time the app starts.",
+        style = MaterialTheme.typography.bodySmall,
+        modifier = Modifier.padding(top = 4.dp),
+    )
+}
+
+private fun formatDegrees(value: Double): String = (kotlin.math.round(value * 100) / 100).toString()
