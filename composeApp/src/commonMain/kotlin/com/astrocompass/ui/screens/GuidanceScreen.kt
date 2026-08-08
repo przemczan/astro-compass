@@ -2,16 +2,21 @@
 
 package com.astrocompass.ui.screens
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.GpsFixed
+import androidx.compose.material.icons.filled.GpsNotFixed
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -37,7 +42,9 @@ import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
+import com.astrocompass.astro.coords.HorizontalCoordinates
 import com.astrocompass.astro.time.currentEpochMillis
+import com.astrocompass.catalog.CatalogRepository
 import com.astrocompass.catalog.SkyObject
 import com.astrocompass.guiding.AbsoluteReferenceState
 import com.astrocompass.guiding.GuidanceCalculator
@@ -47,10 +54,16 @@ import com.astrocompass.guiding.currentHorizontal
 import com.astrocompass.location.ObserverLocation
 import com.astrocompass.ui.components.ArrowIndicator
 import com.astrocompass.ui.components.DeltaBar
+import com.astrocompass.ui.components.SkyMap
+import com.astrocompass.ui.components.SkyMapMarker
+import com.astrocompass.ui.skymap.SkyMapDirectionCache
+import com.astrocompass.ui.skymap.SkyMapViewport
+import com.astrocompass.ui.theme.OnTargetGreen
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.StateFlow
 
 private const val UPDATE_INTERVAL_MS = 50L
+private const val CATALOG_REFRESH_INTERVAL_MS = 5_000L
 private const val SYNC_AGE_AMBER_SECONDS = 5 * 60L
 private const val SYNC_AGE_RED_SECONDS = 15 * 60L
 private const val STABILIZATION_MILLIS = 2_000L
@@ -71,6 +84,7 @@ fun GuidanceScreen(
     pointingService: PointingService,
     absoluteReference: StateFlow<AbsoluteReferenceState?>,
     location: ObserverLocation,
+    catalogRepository: CatalogRepository,
     onTargetToleranceDegrees: Double,
     onSyncOnThisObject: () -> Unit,
     onPlateSolve: suspend () -> PlateSolveAttempt?,
@@ -89,6 +103,34 @@ fun GuidanceScreen(
         while (true) {
             delay(UPDATE_INTERVAL_MS)
             now = currentEpochMillis()
+        }
+    }
+
+    // The map's catalog snapshot is rebuilt on its own, much slower cadence than `now` above --
+    // recomputing precession/ENU for the whole catalog every UPDATE_INTERVAL_MS (for a
+    // sub-pixel-at-any-zoom improvement; the sky moves ~15"/s) would be pure waste.
+    var mapNow by remember { mutableStateOf(currentEpochMillis()) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            delay(CATALOG_REFRESH_INTERVAL_MS)
+            mapNow = currentEpochMillis()
+        }
+    }
+    val catalogLoaded by catalogRepository.isLoaded.collectAsState()
+    val mapDirections = remember(catalogLoaded, mapNow) {
+        if (catalogLoaded) SkyMapDirectionCache.build(catalogRepository.all, location, mapNow) else emptyList()
+    }
+    val mapConstellationLines = remember(catalogLoaded, mapNow) {
+        if (catalogLoaded) SkyMapDirectionCache.buildConstellationDirections(catalogRepository.constellationLines, location, mapNow) else emptyList()
+    }
+
+    var mapViewport by remember { mutableStateOf(SkyMapViewport.DEFAULT) }
+    var followPointing by remember { mutableStateOf(true) }
+    LaunchedEffect(currentPointing, followPointing) {
+        val pointing = currentPointing
+        if (followPointing && pointing != null) {
+            val horizontal = HorizontalCoordinates.fromEnu(pointing)
+            mapViewport = mapViewport.copy(centerAzimuth = horizontal.azimuth, centerAltitude = horizontal.altitude)
         }
     }
 
@@ -148,9 +190,43 @@ fun GuidanceScreen(
                 onPlateSolve = { plateSolveRunId = (plateSolveRunId ?: 0) + 1 },
             )
 
-            Box(Modifier.weight(1f), contentAlignment = Alignment.Center) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    ArrowIndicator(guidance.arrowAngleDegrees, guidance.isOnTarget)
+            // The map fills essentially the whole remaining screen -- same as Search/Alignment's
+            // map -- with the arrow/separation/delta-bar readout as overlays on top of it rather
+            // than separate sections competing with it for vertical space.
+            Box(Modifier.fillMaxWidth().weight(1f).padding(top = 16.dp)) {
+                SkyMap(
+                    directions = mapDirections,
+                    viewport = mapViewport,
+                    onViewportChange = { mapViewport = it },
+                    onManualInteraction = { followPointing = false },
+                    constellationLines = mapConstellationLines,
+                    markers = listOf(
+                        SkyMapMarker(direction = targetDirection, color = MaterialTheme.colorScheme.primary, label = target.displayName),
+                        SkyMapMarker(direction = currentPointing!!, color = if (guidance.isOnTarget) OnTargetGreen else MaterialTheme.colorScheme.secondary),
+                    ),
+                    modifier = Modifier.fillMaxSize(),
+                )
+                IconButton(
+                    onClick = { followPointing = true },
+                    modifier = Modifier.align(Alignment.TopEnd),
+                ) {
+                    Icon(
+                        if (followPointing) Icons.Default.GpsFixed else Icons.Default.GpsNotFixed,
+                        contentDescription = "Follow telescope pointing",
+                        tint = if (followPointing) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+
+                // A translucent scrim behind both overlays -- drawn straight on top of a busy
+                // starfield, plain text/an unfilled arrow would be unreadable against whatever
+                // happens to be behind them.
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    modifier = Modifier.align(Alignment.Center)
+                        .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.78f), RoundedCornerShape(20.dp))
+                        .padding(horizontal = 24.dp, vertical = 16.dp),
+                ) {
+                    ArrowIndicator(guidance.arrowAngleDegrees, guidance.isOnTarget, arrowSize = 110.dp)
                     Text(
                         "${formatDegrees(guidance.separationDegrees)}° away",
                         style = MaterialTheme.typography.headlineSmall,
@@ -159,10 +235,20 @@ fun GuidanceScreen(
                         Text("On target", style = MaterialTheme.typography.labelLarge)
                     }
                 }
-            }
 
-            DeltaBar("ALT", guidance.altitudeDeltaDegrees, Modifier.padding(bottom = 12.dp))
-            DeltaBar("AZ (cross-track)", guidance.crossTrackDeltaDegrees)
+                Column(
+                    Modifier.align(Alignment.BottomCenter)
+                        .fillMaxWidth()
+                        .background(
+                            MaterialTheme.colorScheme.surface.copy(alpha = 0.78f),
+                            RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp),
+                        )
+                        .padding(16.dp),
+                ) {
+                    DeltaBar("ALT", guidance.altitudeDeltaDegrees, Modifier.padding(bottom = 12.dp))
+                    DeltaBar("AZ (cross-track)", guidance.crossTrackDeltaDegrees)
+                }
+            }
         }
     }
 

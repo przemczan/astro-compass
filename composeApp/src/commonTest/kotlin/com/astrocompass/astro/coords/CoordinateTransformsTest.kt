@@ -65,6 +65,21 @@ class CoordinateTransformsTest {
     }
 
     @Test
+    fun enuMatrix_agreesWithPerPointTransform() {
+        val matrix = CoordinateTransforms.equatorialToEnuMatrix(lst, latitude)
+        for (ra in listOf(10.0, 123.4, 300.0)) {
+            for (dec in listOf(-40.0, 0.0, 38.7, 75.0)) {
+                val equatorial = EquatorialCoordinates(Angle.ofDegrees(ra), Angle.ofDegrees(dec))
+                val expected = CoordinateTransforms.equatorialToHorizontal(equatorial, lst, latitude).toEnu()
+                val actual = matrix * equatorial.toUnitVector()
+                assertEquals(expected.x, actual.x, absoluteTolerance = 1e-9)
+                assertEquals(expected.y, actual.y, absoluteTolerance = 1e-9)
+                assertEquals(expected.z, actual.z, absoluteTolerance = 1e-9)
+            }
+        }
+    }
+
+    @Test
     fun polarisAltitude_approximatesObserverLatitude() {
         // Polaris sits about 0.7 degrees from the true NCP; well within a loose tolerance this
         // still confirms the transform places it near altitude = latitude.

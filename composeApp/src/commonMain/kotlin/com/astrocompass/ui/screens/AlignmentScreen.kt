@@ -14,8 +14,10 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Map
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.HorizontalDivider
@@ -48,6 +50,11 @@ import com.astrocompass.catalog.SkyObject
 import com.astrocompass.catalog.StarObject
 import com.astrocompass.guiding.currentHorizontal
 import com.astrocompass.location.ObserverLocation
+import com.astrocompass.ui.components.SkyMap
+import com.astrocompass.ui.components.SkyMapMarker
+import com.astrocompass.ui.skymap.SkyMapDirectionCache
+import com.astrocompass.ui.skymap.SkyMapViewport
+import com.astrocompass.ui.theme.OnTargetGreen
 import kotlinx.coroutines.delay
 
 private const val SUGGESTION_MAGNITUDE_LIMIT = 3.5f
@@ -68,6 +75,8 @@ fun AlignmentScreen(
     var points by remember { mutableStateOf(listOf<AlignmentPoint>()) }
     var pendingTarget by remember { mutableStateOf<StarObject?>(null) }
     var result by remember { mutableStateOf<AlignmentResult?>(null) }
+    var mapMode by remember { mutableStateOf(false) }
+    var viewport by remember { mutableStateOf(SkyMapViewport.DEFAULT) }
 
     var now by remember { mutableStateOf(currentEpochMillis()) }
     LaunchedEffect(Unit) {
@@ -80,6 +89,22 @@ fun AlignmentScreen(
     val catalogLoaded by catalogRepository.isLoaded.collectAsState()
     val suggestions = remember(catalogLoaded, now, points) {
         if (!catalogLoaded) emptyList() else suggestStars(catalogRepository, location, now, points.map { it.skyDirection })
+    }
+    val suggestedIds = remember(suggestions) { suggestions.map { it.id }.toSet() }
+    val starDirections = remember(catalogLoaded, now) {
+        if (!catalogLoaded) emptyList() else SkyMapDirectionCache.build(catalogRepository.all.filterIsInstance<StarObject>(), location, now)
+    }
+    val constellationDirections = remember(catalogLoaded, now) {
+        if (!catalogLoaded) emptyList() else SkyMapDirectionCache.buildConstellationDirections(catalogRepository.constellationLines, location, now)
+    }
+    val syncedMarkers = remember(points) {
+        points.map { point ->
+            SkyMapMarker(
+                direction = point.skyDirection,
+                color = OnTargetGreen,
+                label = catalogRepository.byId(point.targetId)?.displayName,
+            )
+        }
     }
 
     Scaffold(
@@ -145,6 +170,7 @@ fun AlignmentScreen(
                     target = target,
                     location = location,
                     nowEpochMillis = now,
+                    existingPoints = points,
                     onConfirm = {
                         val point = onCapturePoint(target, AlignmentSource.MANUAL_SYNC, now)
                         if (point != null) {
@@ -160,20 +186,51 @@ fun AlignmentScreen(
                     Button(onClick = { result = AlignmentSolver.solve(points, now) }) { Text("Compute alignment") }
                 }
 
-                else -> {
-                    Text(
-                        "Pick a star to sync",
-                        style = MaterialTheme.typography.titleSmall,
-                        modifier = Modifier.padding(top = 8.dp, bottom = 4.dp),
-                    )
-                    LazyColumn(contentPadding = PaddingValues(bottom = 24.dp)) {
-                        items(suggestions) { star ->
-                            val horizontal = star.currentHorizontal(location, now)
-                            ListItem(
-                                headlineContent = { Text(star.displayName) },
-                                supportingContent = { Text("mag ${formatDegrees(star.magnitude.toDouble())} · alt ${formatDegrees(horizontal.altitude.degrees)}°") },
-                                modifier = Modifier.clickable { pendingTarget = star },
-                            )
+                else -> Column(Modifier.fillMaxWidth().weight(1f)) {
+                    Row(
+                        Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 4.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                    ) {
+                        Text("Pick a star to sync", style = MaterialTheme.typography.titleSmall)
+                        Row {
+                            IconButton(onClick = { mapMode = false }) {
+                                Icon(
+                                    Icons.AutoMirrored.Filled.List,
+                                    contentDescription = "List view",
+                                    tint = if (!mapMode) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                            IconButton(onClick = { mapMode = true }) {
+                                Icon(
+                                    Icons.Default.Map,
+                                    contentDescription = "Map view",
+                                    tint = if (mapMode) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        }
+                    }
+
+                    if (mapMode) {
+                        SkyMap(
+                            directions = starDirections,
+                            viewport = viewport,
+                            onViewportChange = { viewport = it },
+                            highlightedIds = suggestedIds,
+                            markers = syncedMarkers,
+                            constellationLines = constellationDirections,
+                            onSelect = { obj -> (obj as? StarObject)?.let { pendingTarget = it } },
+                            modifier = Modifier.fillMaxWidth().weight(1f),
+                        )
+                    } else {
+                        LazyColumn(contentPadding = PaddingValues(bottom = 24.dp)) {
+                            items(suggestions) { star ->
+                                val horizontal = star.currentHorizontal(location, now)
+                                ListItem(
+                                    headlineContent = { Text(star.displayName) },
+                                    supportingContent = { Text("mag ${formatDegrees(star.magnitude.toDouble())} · alt ${formatDegrees(horizontal.altitude.degrees)}°") },
+                                    modifier = Modifier.clickable { pendingTarget = star },
+                                )
+                            }
                         }
                     }
                 }
@@ -185,17 +242,25 @@ fun AlignmentScreen(
 /** The "point, then confirm" step of the alignment wizard: the user centers the telescope on
  *  [target] before tapping confirm, rather than a single tap syncing immediately -- syncing the
  *  instant a star is picked, before the telescope is actually pointed at it, would capture a
- *  wrong sensor direction. */
+ *  wrong sensor direction.
+ *
+ *  [existingPoints] drives two warnings that only the sky map's full-catalog picker can trigger --
+ *  the list view's suggestions are already filtered clear of both. Neither blocks "Confirm sync":
+ *  a below-horizon pick may just mean the telescope will be pointed there shortly, and the
+ *  too-close warning only anticipates what [AlignmentSolver.solve] would reject outright anyway. */
 @Composable
 private fun ConfirmSyncStep(
     target: StarObject,
     location: ObserverLocation,
     nowEpochMillis: Long,
+    existingPoints: List<AlignmentPoint>,
     onConfirm: () -> Unit,
     onPickDifferentStar: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val horizontal = target.currentHorizontal(location, nowEpochMillis)
+    val direction = horizontal.toEnu()
+    val tooCloseTo = existingPoints.firstOrNull { direction.angleTo(it.skyDirection) < AlignmentSolver.MIN_STAR_SEPARATION }
     Card(modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp)) {
             Text("Point at ${target.displayName}", style = MaterialTheme.typography.titleMedium)
@@ -204,6 +269,23 @@ private fun ConfirmSyncStep(
                 style = MaterialTheme.typography.bodyMedium,
                 modifier = Modifier.padding(top = 4.dp, bottom = 4.dp),
             )
+            if (horizontal.altitude.degrees < 0) {
+                Text(
+                    "This star is below the horizon right now.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.padding(bottom = 4.dp),
+                )
+            }
+            if (tooCloseTo != null) {
+                Text(
+                    "Less than ${AlignmentSolver.MIN_STAR_SEPARATION.degrees.toInt()}° from an already-synced star -- " +
+                        "the fit will likely be rejected.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.padding(bottom = 4.dp),
+                )
+            }
             Text(
                 "Center the telescope on ${target.displayName}, then confirm.",
                 style = MaterialTheme.typography.bodyMedium,

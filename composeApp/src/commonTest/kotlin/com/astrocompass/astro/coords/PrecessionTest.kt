@@ -32,6 +32,22 @@ class PrecessionTest {
         assertTrue(separation.degrees in 0.25..0.45, "Total precession over 26y was ${separation.degrees} deg")
     }
 
+    @Test
+    fun rotationMatrix_agreesWithPerPointTransform() {
+        val t = 0.26 // ~26 years past J2000
+        val matrix = Precession.rotationJ2000ToDate(t)
+        for (ra in listOf(0.0, 45.0, 123.4, 210.0, 300.0)) {
+            for (dec in listOf(-80.0, -25.6, 0.0, 38.7, 89.0)) {
+                val original = EquatorialCoordinates(Angle.ofDegrees(ra), Angle.ofDegrees(dec))
+                val expected = Precession.j2000ToDate(original, t).toUnitVector()
+                val actual = matrix * original.toUnitVector()
+                assertEquals(expected.x, actual.x, absoluteTolerance = 1e-9)
+                assertEquals(expected.y, actual.y, absoluteTolerance = 1e-9)
+                assertEquals(expected.z, actual.z, absoluteTolerance = 1e-9)
+            }
+        }
+    }
+
     private fun directionVector(eq: EquatorialCoordinates) =
         com.astrocompass.astro.Vector3(
             x = kotlin.math.cos(eq.declination.radians) * kotlin.math.cos(eq.rightAscension.radians),

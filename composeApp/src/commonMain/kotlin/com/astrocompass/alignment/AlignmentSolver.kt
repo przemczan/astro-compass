@@ -17,7 +17,9 @@ import kotlin.math.sqrt
  */
 object AlignmentSolver {
 
-    private val MIN_STAR_SEPARATION = Angle.ofDegrees(25.0)
+    /** Also referenced by [com.astrocompass.ui.screens.AlignmentScreen]'s sky map, to warn about a
+     *  too-close pick before the user syncs rather than only failing at "Compute alignment" time. */
+    val MIN_STAR_SEPARATION = Angle.ofDegrees(25.0)
 
     fun solve(points: List<AlignmentPoint>, nowEpochMillis: Long): AlignmentResult {
         if (points.size < 2) return AlignmentResult.Failure("At least 2 stars are required")

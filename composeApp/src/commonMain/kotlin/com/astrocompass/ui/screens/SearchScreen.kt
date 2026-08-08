@@ -2,18 +2,14 @@
 
 package com.astrocompass.ui.screens
 
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Explore
@@ -25,8 +21,6 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.ListItem
-import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
@@ -49,6 +43,9 @@ import com.astrocompass.catalog.SearchCategory
 import com.astrocompass.catalog.SkyObject
 import com.astrocompass.guiding.currentHorizontal
 import com.astrocompass.location.ObserverLocation
+import com.astrocompass.ui.components.SkyMap
+import com.astrocompass.ui.skymap.SkyMapDirectionCache
+import com.astrocompass.ui.skymap.SkyMapViewport
 import kotlinx.coroutines.delay
 
 @Composable
@@ -101,6 +98,35 @@ fun SearchScreen(
             else CatalogSearch.search(query, catalogRepository.all, magnitudeLimit, category)
         }
 
+        // The map is a browse mode, not just a different rendering of search results -- with no
+        // query typed it shows the whole (category/magnitude-filtered) sky rather than nothing,
+        // the way the list does. A typed query narrows the map to the same matches as the list.
+        var viewport by remember { mutableStateOf(SkyMapViewport.DEFAULT) }
+        val mapObjects = remember(results, query, category, isLoaded, magnitudeLimit) {
+            if (query.isBlank()) {
+                catalogRepository.all.filter {
+                    (category == null || it.searchCategory == category) && (it.magnitude.isNaN() || it.magnitude <= magnitudeLimit)
+                }
+            } else {
+                results
+            }
+        }
+        val mapDirections = remember(mapObjects, now) { SkyMapDirectionCache.build(mapObjects, location, now) }
+        val mapConstellationLines = remember(isLoaded, now) {
+            if (isLoaded) SkyMapDirectionCache.buildConstellationDirections(catalogRepository.constellationLines, location, now) else emptyList()
+        }
+
+        // With the list gone, the map is the only way to see a search match -- without this, a
+        // query whose result sits outside the current view would show nothing at all instead of
+        // just narrowing what's plotted. Re-centers (keeping the current zoom) on the best match
+        // whenever the result set actually changes; browsing with no query never triggers it,
+        // since results is empty then.
+        LaunchedEffect(results) {
+            val bestMatch = results.firstOrNull() ?: return@LaunchedEffect
+            val horizontal = bestMatch.currentHorizontal(location, now)
+            viewport = viewport.copy(centerAzimuth = horizontal.azimuth, centerAltitude = horizontal.altitude)
+        }
+
         Column(Modifier.padding(padding).fillMaxSize()) {
             OutlinedTextField(
                 value = query,
@@ -130,33 +156,14 @@ fun SearchScreen(
                 }
             }
 
-            LazyColumn(Modifier.fillMaxWidth().padding(top = 8.dp), contentPadding = PaddingValues(bottom = 24.dp)) {
-                items(results) { obj ->
-                    val horizontal = obj.currentHorizontal(location, now)
-                    val belowHorizon = horizontal.altitude.degrees < 0
-                    ListItem(
-                        headlineContent = { Text(obj.displayName) },
-                        supportingContent = {
-                            Text(
-                                buildString {
-                                    if (!obj.magnitude.isNaN()) append("mag ${formatOneDecimal(obj.magnitude)} · ")
-                                    append("alt ${formatOneDecimal(horizontal.altitude.degrees)}°")
-                                    if (belowHorizon) append(" (below horizon)")
-                                },
-                            )
-                        },
-                        modifier = Modifier.fillMaxWidth().clickable { onSelectTarget(obj) },
-                        colors = if (belowHorizon) {
-                            ListItemDefaults.colors(
-                                headlineColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
-                                supportingColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f),
-                            )
-                        } else {
-                            ListItemDefaults.colors()
-                        },
-                    )
-                }
-            }
+            SkyMap(
+                directions = mapDirections,
+                viewport = viewport,
+                onViewportChange = { viewport = it },
+                constellationLines = mapConstellationLines,
+                onSelect = { obj -> onSelectTarget(obj) },
+                modifier = Modifier.fillMaxWidth().weight(1f).padding(top = 8.dp),
+            )
         }
     }
 }
@@ -180,10 +187,3 @@ private fun LocationRequiredPrompt(onOpenSettings: () -> Unit, modifier: Modifie
         }
     }
 }
-
-private fun formatOneDecimal(value: Double): String {
-    val rounded = kotlin.math.round(value * 10) / 10
-    return rounded.toString()
-}
-
-private fun formatOneDecimal(value: Float): String = formatOneDecimal(value.toDouble())

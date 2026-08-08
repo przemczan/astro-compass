@@ -1,6 +1,7 @@
 package com.astrocompass.astro.coords
 
 import com.astrocompass.astro.Angle
+import com.astrocompass.astro.Matrix3
 import kotlin.math.asin
 import kotlin.math.atan2
 import kotlin.math.cos
@@ -36,5 +37,21 @@ object Precession {
         val ra = Angle.ofRadians(atan2(a, b)) + Angle.ofRadians(zRad)
         val dec = Angle.ofRadians(asin(c.coerceIn(-1.0, 1.0)))
         return EquatorialCoordinates(ra.normalized(), dec)
+    }
+
+    /** The same transform as [j2000ToDate], as a single rotation matrix -- built once per tick and
+     *  applied to many cached direction vectors (see the sky map's scene builder) rather than
+     *  re-deriving the per-point trig for every object. Columns are the images of the equatorial
+     *  Cartesian basis vectors under [j2000ToDate]; precession is linear, so composing the matrix
+     *  this way is exact and reuses the already-tested per-point formula instead of re-deriving it. */
+    fun rotationJ2000ToDate(julianCenturiesJ2000: Double): Matrix3 {
+        val ex = j2000ToDate(EquatorialCoordinates(Angle.ZERO, Angle.ZERO), julianCenturiesJ2000).toUnitVector()
+        val ey = j2000ToDate(EquatorialCoordinates(Angle.ofDegrees(90.0), Angle.ZERO), julianCenturiesJ2000).toUnitVector()
+        val ez = j2000ToDate(EquatorialCoordinates(Angle.ZERO, Angle.ofDegrees(90.0)), julianCenturiesJ2000).toUnitVector()
+        return Matrix3(
+            ex.x, ey.x, ez.x,
+            ex.y, ey.y, ez.y,
+            ex.z, ey.z, ez.z,
+        )
     }
 }

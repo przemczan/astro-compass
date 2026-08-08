@@ -24,6 +24,21 @@ data class Matrix3(
         m20 * v.x + m21 * v.y + m22 * v.z,
     )
 
+    /** Composes two rotations so `(a * b) * v == a * (b * v)` -- lets a per-tick rotation chain
+     *  (e.g. precession then equatorial-to-ENU) collapse into a single matrix applied per object,
+     *  instead of one matrix-vector multiply per stage per object. */
+    operator fun times(other: Matrix3) = Matrix3(
+        m00 * other.m00 + m01 * other.m10 + m02 * other.m20,
+        m00 * other.m01 + m01 * other.m11 + m02 * other.m21,
+        m00 * other.m02 + m01 * other.m12 + m02 * other.m22,
+        m10 * other.m00 + m11 * other.m10 + m12 * other.m20,
+        m10 * other.m01 + m11 * other.m11 + m12 * other.m21,
+        m10 * other.m02 + m11 * other.m12 + m12 * other.m22,
+        m20 * other.m00 + m21 * other.m10 + m22 * other.m20,
+        m20 * other.m01 + m21 * other.m11 + m22 * other.m21,
+        m20 * other.m02 + m21 * other.m12 + m22 * other.m22,
+    )
+
     fun transposed() = Matrix3(
         m00, m10, m20,
         m01, m11, m21,

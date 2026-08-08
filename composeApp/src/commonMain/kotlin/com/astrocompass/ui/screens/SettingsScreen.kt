@@ -91,7 +91,8 @@ fun SettingsScreen(
             SectionTitle("Data sources & licenses")
             Text(
                 "Stars: HYG Database (Astronomy Nexus / David Nash), CC BY-SA 4.0.\n" +
-                    "Deep sky: OpenNGC (Mattia Verga), CC BY-SA 4.0.",
+                    "Deep sky: OpenNGC (Mattia Verga), CC BY-SA 4.0.\n" +
+                    "Constellation lines: d3-celestial (Olaf Frohn), BSD-3-Clause.",
                 style = MaterialTheme.typography.bodySmall,
             )
 

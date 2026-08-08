@@ -62,7 +62,8 @@ All application code lives in `composeApp/src/`, a single Gradle module with thr
 | `guiding/` | `TelescopeAxis`, `AbsoluteReference`, `PointingService` (sensor + alignment fusion), `GuidanceCalculator`, `CurrentPosition` (target alt/az right now) |
 | `settings/` | `AppPreferences` — multiplatform-settings-backed, hand-rolled reactive (`MutableStateFlow` seeded from storage + setter that persists), same pattern as lightnet-mobile's `DemoSettings` |
 | `ui/screens/` | `SearchScreen`, `GuidanceScreen`, `AlignmentScreen`, `SettingsScreen` |
-| `ui/components/` | `ArrowIndicator`, `DeltaBar` |
+| `ui/components/` | `ArrowIndicator`, `DeltaBar`, `SkyMap` (pannable/zoomable alt-az chart) |
+| `ui/skymap/` | `SkyMapViewport` (pan/zoom state), `SkyMapScene` (projection/culling/hit-test), `SkyMapDirectionCache` (per-tick catalog + constellation-line ENU snapshot) -- `SkyMap`'s non-Composable backing logic, kept separately unit-testable |
 | `ui/theme/` | `GuiderTheme`, `AppTheme` (Light/Dark/Night) |
 
 `AppContainer.kt` (top-level `com.astrocompass`) owns every long-lived service — sensor, location,
@@ -119,9 +120,12 @@ which breaks a screen-projected arrow geometrically. Azimuth is always shown as 
   Settings → Advanced, applied once at `AndroidOrientationSensor` construction (takes effect on
   next app restart, not live).
 - **Binary catalog format**: `tools/build-catalogs.mjs`'s `BinaryWriter` and
-  `astro/io/BinaryReader` + `catalog/CatalogFormat` must stay in lockstep field-for-field. `NaN`
-  is the "no magnitude" sentinel for deep-sky objects (`Float.isNaN()`), not a separate flag byte.
-  `SkyObjectType`'s enum order is load-bearing — encoded as a single byte, append-only.
+  `astro/io/BinaryReader` + `catalog/CatalogFormat` must stay in lockstep field-for-field, across
+  all three blobs (`stars.bin`, `dso.bin`, `constellations.bin`). `NaN` is the "no magnitude"
+  sentinel for deep-sky objects (`Float.isNaN()`), not a separate flag byte. `SkyObjectType`'s enum
+  order is load-bearing — encoded as a single byte, append-only. Constellation lines are stored as
+  raw RA/Dec vertices (not references into `stars.bin`), since their d3-celestial source has no
+  concept of a Hipparcos-numbered endpoint.
 - **Test ground truth**: astro/ tests assert against independently-citable anchors (JD/GMST at
   J2000, well-known orbital facts like Mercury/Venus max elongation, Polaris altitude ≈
   latitude) or self-consistent invariants (round-trips, synthetic-rotation recovery in

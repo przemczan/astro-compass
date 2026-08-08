@@ -1,14 +1,16 @@
 #!/usr/bin/env node
-// Generates composeApp/src/commonMain/composeResources/files/{stars,dso}.bin from the HYG star
-// database and OpenNGC deep-sky catalog. Run manually/occasionally with `node tools/build-catalogs.mjs`
-// -- this script fetches from the network, but its *output* is committed and the Gradle build never
-// touches the network, so the app build stays reproducible offline.
+// Generates composeApp/src/commonMain/composeResources/files/{stars,dso,constellations}.bin from
+// the HYG star database, OpenNGC deep-sky catalog, and d3-celestial's constellation line data.
+// Run manually/occasionally with `node tools/build-catalogs.mjs` -- this script fetches from the
+// network, but its *output* is committed and the Gradle build never touches the network, so the
+// app build stays reproducible offline.
 //
-// Sources (both CC-BY-SA-4.0 -- verified 2026-08-06, credited in LICENSES.md):
-//   HYG v4.1        https://github.com/astronexus/HYG-Database  (Astronomy Nexus / David Nash)
-//   OpenNGC         https://github.com/mattiaverga/OpenNGC      (Mattia Verga)
+// Sources (all verified 2026-08-08, credited in LICENSES.md):
+//   HYG v4.1        https://github.com/astronexus/HYG-Database  (Astronomy Nexus / David Nash), CC-BY-SA-4.0
+//   OpenNGC         https://github.com/mattiaverga/OpenNGC      (Mattia Verga), CC-BY-SA-4.0
+//   d3-celestial    https://github.com/ofrohn/d3-celestial      (Olaf Frohn), BSD-3-Clause
 //
-// Usage: node tools/build-catalogs.mjs [--hyg <path>] [--ngc <path>] [--addendum <path>]
+// Usage: node tools/build-catalogs.mjs [--hyg <path>] [--ngc <path>] [--addendum <path>] [--constellations <path>]
 //   Omit a flag to fetch that source fresh; pass a local path to reuse an already-downloaded copy.
 
 import { writeFileSync, readFileSync, mkdirSync } from 'node:fs';
@@ -21,6 +23,7 @@ const OUT_DIR = join(__dirname, '..', 'composeApp', 'src', 'commonMain', 'compos
 const HYG_URL = 'https://raw.githubusercontent.com/astronexus/HYG-Database/main/hyg/CURRENT/hygdata_v41.csv';
 const NGC_URL = 'https://raw.githubusercontent.com/mattiaverga/OpenNGC/master/database_files/NGC.csv';
 const ADDENDUM_URL = 'https://raw.githubusercontent.com/mattiaverga/OpenNGC/master/database_files/addendum.csv';
+const CONSTELLATION_LINES_URL = 'https://raw.githubusercontent.com/ofrohn/d3-celestial/master/data/constellations.lines.json';
 
 // Stars fainter than this are dropped even if named -- keeps the blob to genuinely
 // identifiable/pointable stars rather than the ~12k anonymous mag<=7 field stars HYG also carries.
@@ -223,5 +226,41 @@ async function buildDeepSky() {
   console.log(`dso.bin: ${objects.length} deep-sky objects`);
 }
 
+// d3-celestial stores RA as signed degrees (west-positive, i.e. mirrored/negated versus normal
+// east-positive RA -- see its own d3.geo-projection convention), not HIP star references: each
+// vertex is its own RA/Dec coordinate, independent of (and not required to exactly coincide with)
+// any star in stars.bin. That sidesteps the brittleness a HIP-keyed format would have (a bundled
+// stars.bin that later drops a star would silently break a line referencing it) at the cost of a
+// few arcminutes of mismatch between a line's endpoint and the star it schematically touches --
+// invisible for a stick figure, which was never meant to hit star centers pixel-perfect.
+function normalizeRaDegrees(signedDegrees) {
+  return signedDegrees < 0 ? signedDegrees + 360 : signedDegrees;
+}
+
+async function buildConstellationLines() {
+  const text = await loadText(CONSTELLATION_LINES_URL, args.constellations);
+  const geoJson = JSON.parse(text);
+
+  const w = new BinaryWriter();
+  w.int32(geoJson.features.length);
+  for (const feature of geoJson.features) {
+    const polylines = feature.geometry.coordinates;
+    w.string(feature.id);
+    w.int32(polylines.length);
+    for (const polyline of polylines) {
+      w.int32(polyline.length);
+      for (const [raDeg, decDeg] of polyline) {
+        w.float32(normalizeRaDegrees(raDeg) * DEG_TO_RAD);
+        w.float32(decDeg * DEG_TO_RAD);
+      }
+    }
+  }
+  mkdirSync(OUT_DIR, { recursive: true });
+  writeFileSync(join(OUT_DIR, 'constellations.bin'), w.toBuffer());
+  const segments = geoJson.features.flatMap((f) => f.geometry.coordinates).reduce((sum, line) => sum + line.length - 1, 0);
+  console.log(`constellations.bin: ${geoJson.features.length} constellations, ${segments} line segments`);
+}
+
 await buildStars();
 await buildDeepSky();
+await buildConstellationLines();

@@ -6,25 +6,23 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import com.astrocompass.ui.theme.OnTargetGreen
 import kotlin.math.PI
 import kotlin.math.cos
 import kotlin.math.sin
-
-/** Semantic "on target" color -- an intentional exception to theme-driven colors, same
- *  category as lightnet-mobile's StatusDot success green. */
-private val OnTargetColor = Color(0xFF4CAF50)
 
 @Composable
 fun ArrowIndicator(
     arrowAngleDegrees: Double,
     isOnTarget: Boolean,
     modifier: Modifier = Modifier,
+    arrowSize: Dp = 180.dp,
 ) {
-    val color = if (isOnTarget) OnTargetColor else MaterialTheme.colorScheme.primary
-    Canvas(modifier.size(180.dp)) {
+    val color = if (isOnTarget) OnTargetGreen else MaterialTheme.colorScheme.primary
+    Canvas(modifier.size(arrowSize)) {
         val center = Offset(size.width / 2, size.height / 2)
         val radius = size.minDimension / 2 * 0.85f
         val angleRad = (arrowAngleDegrees * PI / 180.0).toFloat()

@@ -57,4 +57,22 @@ object CatalogFormat {
             )
         }
     }
+
+    fun decodeConstellationLines(bytes: ByteArray): List<ConstellationLine> {
+        val reader = BinaryReader(bytes)
+        val count = reader.readInt32()
+        return List(count) {
+            val abbreviation = reader.readString()
+            val polylineCount = reader.readInt32()
+            val polylines = List(polylineCount) {
+                val vertexCount = reader.readInt32()
+                List(vertexCount) {
+                    val ra = Angle.ofRadians(reader.readFloat32().toDouble())
+                    val dec = Angle.ofRadians(reader.readFloat32().toDouble())
+                    EquatorialCoordinates(ra, dec)
+                }
+            }
+            ConstellationLine(abbreviation, polylines)
+        }
+    }
 }

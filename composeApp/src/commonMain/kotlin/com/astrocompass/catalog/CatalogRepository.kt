@@ -11,27 +11,35 @@ import kotlinx.coroutines.withContext
  *  [load] is suspend and must be called once, from a coroutine -- typically from `AppContainer`
  *  at startup. [isLoaded] lets the Search screen show a loading state until then. */
 class CatalogRepository {
-    private var _stars: List<StarObject> = emptyList()
-    private var _deepSkyObjects: List<DeepSkyObject> = emptyList()
     private val solarSystemObjects: List<SolarSystemObject> =
         SolarSystemBody.entries.map { SolarSystemObject(it) }
 
     private val _isLoaded = MutableStateFlow(false)
     val isLoaded: StateFlow<Boolean> = _isLoaded
 
+    /** All loaded objects, built once in [load] -- the sky map projects this list every few
+     *  seconds, so it must not be rebuilt (three list concatenations) on every access. */
+    var all: List<SkyObject> = solarSystemObjects
+        private set
+
+    /** The sky map's constellation stick figures -- see [ConstellationLine], `constellations.bin`. */
+    var constellationLines: List<ConstellationLine> = emptyList()
+        private set
+
     suspend fun load() {
         val starBytes = Res.readBytes("files/stars.bin")
         val dsoBytes = Res.readBytes("files/dso.bin")
+        val constellationBytes = Res.readBytes("files/constellations.bin")
         // Decoding ~16k records (string allocations included) is real CPU work -- keep it off
         // the caller's dispatcher, which for AppContainer's startup launch is Dispatchers.Main.
         withContext(Dispatchers.Default) {
-            _stars = CatalogFormat.decodeStars(starBytes)
-            _deepSkyObjects = CatalogFormat.decodeDeepSkyObjects(dsoBytes)
+            val stars = CatalogFormat.decodeStars(starBytes)
+            val deepSkyObjects = CatalogFormat.decodeDeepSkyObjects(dsoBytes)
+            all = solarSystemObjects + stars + deepSkyObjects
+            constellationLines = CatalogFormat.decodeConstellationLines(constellationBytes)
         }
         _isLoaded.value = true
     }
-
-    val all: List<SkyObject> get() = solarSystemObjects + _stars + _deepSkyObjects
 
     fun byId(id: String): SkyObject? = all.firstOrNull { it.id == id }
 }

@@ -68,6 +68,7 @@ fun GuiderApp(container: AppContainer) {
                 pointingService = container.pointingService,
                 absoluteReference = container.absoluteReference.current,
                 location = location,
+                catalogRepository = container.catalogRepository,
                 onTargetToleranceDegrees = toleranceDegrees,
                 onSyncOnThisObject = {
                     container.syncOnObject(selectedTarget!!, currentEpochMillis())
