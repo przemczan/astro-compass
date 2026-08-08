@@ -38,6 +38,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.astrocompass.astro.Angle
+import com.astrocompass.guiding.CameraMounting
 import com.astrocompass.guiding.TelescopeAxis
 import com.astrocompass.location.ObserverLocation
 import com.astrocompass.sensors.OrientationSensor
@@ -235,6 +236,31 @@ private fun AdvancedSection(preferences: AppPreferences, orientationSensor: Orie
     }
     Text(
         "Takes effect the next time the app starts.",
+        style = MaterialTheme.typography.bodySmall,
+        modifier = Modifier.padding(top = 4.dp),
+    )
+
+    Text(
+        "Camera mounting",
+        style = MaterialTheme.typography.bodyMedium,
+        modifier = Modifier.padding(top = 16.dp),
+    )
+    val mounting by preferences.cameraMounting.collectAsState()
+    var mountingExpanded by remember { mutableStateOf(false) }
+    Row {
+        OutlinedButton(onClick = { mountingExpanded = true }) { Text(mounting.label) }
+        DropdownMenu(expanded = mountingExpanded, onDismissRequest = { mountingExpanded = false }) {
+            CameraMounting.entries.forEach { option ->
+                DropdownMenuItem(
+                    text = { Text(option.label) },
+                    onClick = { preferences.setCameraMounting(option); mountingExpanded = false },
+                )
+            }
+        }
+    }
+    Text(
+        "Only matters once you use Platesolve. If an applied correction looks way off (tens of " +
+            "degrees, not a few), try a different option here.",
         style = MaterialTheme.typography.bodySmall,
         modifier = Modifier.padding(top = 4.dp),
     )

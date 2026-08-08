@@ -1,6 +1,7 @@
 package com.astrocompass.settings
 
 import com.astrocompass.astro.Angle
+import com.astrocompass.guiding.CameraMounting
 import com.astrocompass.guiding.TelescopeAxis
 import com.astrocompass.location.ObserverLocation
 import com.astrocompass.sensors.SensorSource
@@ -53,6 +54,17 @@ class AppPreferences(private val settings: Settings) {
         if (source == null) settings.remove(KEY_SENSOR_OVERRIDE) else settings.putString(KEY_SENSOR_OVERRIDE, source.name)
     }
 
+    /** Advanced-only: which [CameraMounting] preset to use when applying a plate-solve
+     *  correction. See [CameraMounting]'s doc comment for why this can't be a fixed constant. */
+    val cameraMounting = MutableStateFlow(
+        settings.getStringOrNull(KEY_CAMERA_MOUNTING)?.let { runCatching { CameraMounting.valueOf(it) }.getOrNull() }
+            ?: CameraMounting.DEFAULT
+    )
+    fun setCameraMounting(mounting: CameraMounting) {
+        cameraMounting.value = mounting
+        settings.putString(KEY_CAMERA_MOUNTING, mounting.name)
+    }
+
     val manualLocation = MutableStateFlow(readManualLocation())
     fun setManualLocation(location: ObserverLocation?) {
         manualLocation.value = location
@@ -85,6 +97,7 @@ class AppPreferences(private val settings: Settings) {
         const val KEY_MAGNITUDE_LIMIT = "magnitude_limit"
         const val KEY_APP_THEME = "app_theme"
         const val KEY_SENSOR_OVERRIDE = "sensor_source_override"
+        const val KEY_CAMERA_MOUNTING = "camera_mounting"
         const val KEY_MANUAL_LAT = "manual_lat"
         const val KEY_MANUAL_LON = "manual_lon"
         const val KEY_MANUAL_ELEVATION = "manual_elevation"

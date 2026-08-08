@@ -72,6 +72,8 @@ fun GuiderApp(container: AppContainer) {
                 onSyncOnThisObject = {
                     container.syncOnObject(selectedTarget!!, currentEpochMillis())
                 },
+                onPlateSolve = { container.attemptPlateSolve() },
+                onApplyPlateSolve = { attempt -> container.applyPlateSolve(attempt) },
                 onOpenAlignment = { showGuidance = false; showAlignment = true },
                 onBack = goBack,
                 modifier = Modifier.fillMaxSize(),

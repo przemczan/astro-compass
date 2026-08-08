@@ -1,4 +1,4 @@
-package com.astrocompass.alignment
+package com.astrocompass.astro
 
 import kotlin.math.abs
 import kotlin.math.sqrt
@@ -6,9 +6,9 @@ import kotlin.math.sqrt
 /**
  * Classic cyclic Jacobi eigenvalue algorithm for a real symmetric matrix: repeatedly zeroes the
  * largest off-diagonal element via a Givens rotation until the matrix is (numerically) diagonal.
- * Used for Davenport's q-method, which needs the eigenvector of the largest eigenvalue of a
- * symmetric 4x4 matrix -- small and fixed-size enough that this simple, robust method beats
- * pulling in a general-purpose linear algebra library.
+ * Used by [AttitudeFit]'s Davenport q-method, which needs the eigenvector of the largest
+ * eigenvalue of a symmetric 4x4 matrix -- small and fixed-size enough that this simple, robust
+ * method beats pulling in a general-purpose linear algebra library.
  */
 internal object JacobiEigenSolver {
 

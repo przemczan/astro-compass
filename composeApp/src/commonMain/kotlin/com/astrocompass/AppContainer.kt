@@ -6,18 +6,51 @@ import com.astrocompass.alignment.AlignmentResult
 import com.astrocompass.alignment.AlignmentSolver
 import com.astrocompass.alignment.AlignmentSource
 import com.astrocompass.alignment.AlignmentStore
+import com.astrocompass.alignment.PlateSolveAlignment
+import com.astrocompass.astro.Angle
+import com.astrocompass.astro.Quaternion
+import com.astrocompass.astro.Vector3
+import com.astrocompass.astro.coords.CoordinateTransforms
+import com.astrocompass.astro.coords.EquatorialCoordinates
+import com.astrocompass.astro.coords.HorizontalCoordinates
+import com.astrocompass.astro.time.AstroTime
+import com.astrocompass.astro.time.currentEpochMillis
 import com.astrocompass.catalog.CatalogRepository
 import com.astrocompass.catalog.SkyObject
+import com.astrocompass.catalog.StarObject
 import com.astrocompass.guiding.AlignmentAbsoluteReference
+import com.astrocompass.guiding.PlateSolveAttempt
 import com.astrocompass.guiding.PointingService
 import com.astrocompass.guiding.currentHorizontal
 import com.astrocompass.location.LocationProvider
 import com.astrocompass.location.LocationResolver
+import com.astrocompass.location.ObserverLocation
+import com.astrocompass.platesolve.CameraCapture
+import com.astrocompass.platesolve.CapturedFrame
+import com.astrocompass.platesolve.CentroidDetector
+import com.astrocompass.platesolve.PlateSolver
+import com.astrocompass.platesolve.ReferenceStar
 import com.astrocompass.sensors.OrientationSensor
 import com.astrocompass.settings.AppPreferences
 import com.russhwolf.settings.Settings
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
+
+/** A drift correction, not a from-scratch search -- generous enough to absorb plausible gyro
+ *  drift since the last sync, but narrow enough to keep [PlateSolver]'s candidate-pair matching
+ *  fast on a phone CPU (see the tuning notes on `PlateSolverCatalogDensityTest`). */
+private val PLATE_SOLVE_SEARCH_RADIUS = Angle.ofDegrees(15.0)
+
+/** [PlateSolver]'s matching cost depends heavily on how many real catalog stars fall within
+ *  [PLATE_SOLVE_SEARCH_RADIUS] of wherever the app is currently pointed -- that varies a lot by
+ *  sky region (dense near the galactic plane, sparse elsewhere), and there's nothing that scales
+ *  it down automatically. Without a hard cutoff a dense enough region -- or a scene with no real
+ *  stars in it at all, so the search never converges -- can run for many minutes with no
+ *  feedback, which reads as a hang rather than a slow failure. */
+private const val PLATE_SOLVE_TIMEOUT_MILLIS = 30_000L
 
 /**
  * Owns every long-lived service for the app's lifetime: sensor, location, catalog, preferences,
@@ -31,6 +64,7 @@ class AppContainer(
     private val scope: CoroutineScope,
     val orientationSensor: OrientationSensor,
     val locationProvider: LocationProvider,
+    val cameraCapture: CameraCapture,
     settings: Settings,
 ) {
     val preferences = AppPreferences(settings)
@@ -83,5 +117,90 @@ class AppContainer(
         }
         if (result is AlignmentResult.Success) saveAlignment(result.model)
         return result
+    }
+
+    /**
+     * Takes one photo and plate-solves it against the loaded catalog, seeded from wherever
+     * [pointingService] currently thinks the telescope points -- so this is a drift *corrector*,
+     * not a from-scratch alignment: it requires an existing sync (null pointing direction) the
+     * same way [syncOnObject] does. Returns null if there's no existing pointing/location yet, the
+     * camera capture failed, or too few stars matched.
+     *
+     * The orientation sensor reading and clock time are read immediately after
+     * [CameraCapture.captureFrame] returns, before the (comparatively slow) detection/matching
+     * runs -- that's the shutter-time snapshot the whole feature exists to get right, not a value
+     * read once the solve happens to finish. [PlateSolveAlignment.solve] is called right here too
+     * (not deferred to [applyPlateSolve]), so the [PlateSolveAttempt] the caller reviews is
+     * exactly what gets saved -- confirming it later can't silently pick up a changed
+     * [AppPreferences.cameraMounting] or a fresher (and wrong, per the same invariant) sensor
+     * reading.
+     */
+    suspend fun attemptPlateSolve(): PlateSolveAttempt? {
+        val seedSkyDirection = pointingService.currentSkyDirection.value ?: return null
+        val location = locationResolver.resolved.value ?: return null
+        val frame = cameraCapture.captureFrame() ?: return null
+
+        val orientation = orientationSensor.orientation.value ?: return null
+        val capturedAtEpochMillis = currentEpochMillis()
+
+        val julianDay = AstroTime.julianDay(capturedAtEpochMillis)
+        val lst = AstroTime.localSiderealTime(julianDay, location.longitude)
+        val seedBoresight = CoordinateTransforms.horizontalToEquatorial(
+            HorizontalCoordinates.fromEnu(seedSkyDirection), lst, location.latitude,
+        )
+
+        // Blob detection and candidate matching are real CPU work (see the tuning notes on
+        // `PlateSolverCatalogDensityTest`) -- keep them off whatever dispatcher the caller (the
+        // Guidance screen's coroutine scope) happens to be running on, and bounded, since their
+        // cost isn't (see PLATE_SOLVE_TIMEOUT_MILLIS).
+        return withTimeoutOrNull(PLATE_SOLVE_TIMEOUT_MILLIS) {
+            withContext(Dispatchers.Default) {
+                solveAgainstCatalog(frame, seedBoresight, orientation.deviceToWorld, location, seedSkyDirection, capturedAtEpochMillis)
+            }
+        }
+    }
+
+    private fun solveAgainstCatalog(
+        frame: CapturedFrame,
+        seedBoresight: EquatorialCoordinates,
+        deviceToWorld: Quaternion,
+        location: ObserverLocation,
+        seedSkyDirection: Vector3,
+        capturedAtEpochMillis: Long,
+    ): PlateSolveAttempt? {
+        val detections = CentroidDetector.detect(frame.luminance, frame.width, frame.height)
+        val referenceStars = catalogRepository.all
+            .filterIsInstance<StarObject>()
+            .map { ReferenceStar(it.j2000.rightAscension, it.j2000.declination, it.magnitude) }
+
+        val result = PlateSolver.solve(
+            detections = detections,
+            intrinsics = frame.intrinsics,
+            seedBoresight = seedBoresight,
+            searchRadius = PLATE_SOLVE_SEARCH_RADIUS,
+            referenceStars = referenceStars,
+        ) ?: return null
+
+        val alignmentResult = PlateSolveAlignment.solve(
+            plateSolveResult = result,
+            deviceToWorld = deviceToWorld,
+            cameraToDevice = preferences.cameraMounting.value.cameraToDevice,
+            location = location,
+            nowEpochMillis = capturedAtEpochMillis,
+        )
+        if (alignmentResult !is AlignmentResult.Success) return null
+
+        val newPredictedPointing = alignmentResult.model.sensorToSky.rotate(
+            deviceToWorld.rotate(preferences.telescopeAxis.value.deviceVector),
+        )
+        val correctionDegrees = seedSkyDirection.angleTo(newPredictedPointing).degrees
+
+        return PlateSolveAttempt(result, alignmentResult.model, correctionDegrees)
+    }
+
+    /** Saves a [PlateSolveAttempt] the user has confirmed -- see [attemptPlateSolve] for why
+     *  [PlateSolveAttempt.correctedModel] is already fully computed by the time it reaches here. */
+    fun applyPlateSolve(attempt: PlateSolveAttempt) {
+        saveAlignment(attempt.correctedModel)
     }
 }

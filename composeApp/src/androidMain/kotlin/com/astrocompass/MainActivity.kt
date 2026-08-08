@@ -10,6 +10,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import com.astrocompass.sensors.AndroidOrientationSensor
 import com.astrocompass.sensors.SensorSource
 import com.astrocompass.location.AndroidLocationProvider
+import com.astrocompass.platesolve.AndroidCameraCapture
 import com.russhwolf.settings.SharedPreferencesSettings
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -21,10 +22,12 @@ class MainActivity : ComponentActivity() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private lateinit var container: AppContainer
 
-    private val requestLocationPermission = registerForActivityResult(
+    private val requestPermissions = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions(),
     ) { granted ->
-        if (granted.values.any { it }) container.locationProvider.start()
+        val locationGranted = granted[Manifest.permission.ACCESS_FINE_LOCATION] == true ||
+            granted[Manifest.permission.ACCESS_COARSE_LOCATION] == true
+        if (locationGranted) container.locationProvider.start()
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -40,11 +43,16 @@ class MainActivity : ComponentActivity() {
             scope = scope,
             orientationSensor = AndroidOrientationSensor(applicationContext, sensorOverride),
             locationProvider = AndroidLocationProvider(applicationContext),
+            cameraCapture = AndroidCameraCapture(applicationContext),
             settings = settings,
         )
 
-        requestLocationPermission.launch(
-            arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION),
+        requestPermissions.launch(
+            arrayOf(
+                Manifest.permission.ACCESS_FINE_LOCATION,
+                Manifest.permission.ACCESS_COARSE_LOCATION,
+                Manifest.permission.CAMERA,
+            ),
         )
 
         setContent {

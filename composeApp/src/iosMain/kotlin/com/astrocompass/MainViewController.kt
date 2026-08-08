@@ -2,6 +2,7 @@ package com.astrocompass
 
 import androidx.compose.ui.window.ComposeUIViewController
 import com.astrocompass.location.StubLocationProvider
+import com.astrocompass.platesolve.StubCameraCapture
 import com.astrocompass.sensors.StubOrientationSensor
 import com.russhwolf.settings.NSUserDefaultsSettings
 import kotlinx.coroutines.CoroutineScope
@@ -14,6 +15,7 @@ fun MainViewController() = ComposeUIViewController {
         scope = CoroutineScope(SupervisorJob() + Dispatchers.Main),
         orientationSensor = StubOrientationSensor(),
         locationProvider = StubLocationProvider(),
+        cameraCapture = StubCameraCapture(),
         settings = NSUserDefaultsSettings(NSUserDefaults.standardUserDefaults),
     )
     GuiderApp(container)

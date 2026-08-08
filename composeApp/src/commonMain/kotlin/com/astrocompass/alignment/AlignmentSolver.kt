@@ -1,7 +1,7 @@
 package com.astrocompass.alignment
 
 import com.astrocompass.astro.Angle
-import com.astrocompass.astro.Matrix3
+import com.astrocompass.astro.AttitudeFit
 import com.astrocompass.astro.Quaternion
 import com.astrocompass.astro.Vector3
 import kotlin.math.atan2
@@ -74,34 +74,9 @@ object AlignmentSolver {
         return Quaternion.fromAxisAngle(Vector3.UNIT_Z, Angle.ofRadians(sensorYaw - skyYaw))
     }
 
-    /** Davenport's q-method (Markley & Crassidis, *Fundamentals of Spacecraft Attitude
-     *  Determination and Control*): build B = sum(measured_i outer reference_i), then the
-     *  4x4 matrix K whose largest-eigenvalue eigenvector is the optimal rotation quaternion. */
-    private fun solveQMethod(points: List<AlignmentPoint>): Quaternion {
-        var b = Matrix3(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-        for (point in points) {
-            b += point.sensorDirection outer point.skyDirection
-        }
-
-        val s = b + b.transposed()
-        val sigma = b.trace
-        val z = Vector3(b.m12 - b.m21, b.m20 - b.m02, b.m01 - b.m10)
-
-        val k = arrayOf(
-            doubleArrayOf(s.m00 - sigma, s.m01, s.m02, z.x),
-            doubleArrayOf(s.m01, s.m11 - sigma, s.m12, z.y),
-            doubleArrayOf(s.m02, s.m12, s.m22 - sigma, z.z),
-            doubleArrayOf(z.x, z.y, z.z, sigma),
-        )
-
-        val (eigenvalues, eigenvectors) = JacobiEigenSolver.decomposeSymmetric(k)
-        val bestIndex = eigenvalues.indices.maxBy { eigenvalues[it] }
-        val q1 = eigenvectors[0][bestIndex]
-        val q2 = eigenvectors[1][bestIndex]
-        val q3 = eigenvectors[2][bestIndex]
-        val q4 = eigenvectors[3][bestIndex]
-        return Quaternion(w = q4, x = q1, y = q2, z = q3).normalized()
-    }
+    /** Delegates to the shared [AttitudeFit] core -- see its doc comment for the q-method itself. */
+    private fun solveQMethod(points: List<AlignmentPoint>): Quaternion =
+        AttitudeFit.solve(measured = points.map { it.sensorDirection }, reference = points.map { it.skyDirection })
 
     private fun computeRmsResidualDegrees(sensorToSky: Quaternion, points: List<AlignmentPoint>): Double {
         val squaredErrors = points.map { point ->
