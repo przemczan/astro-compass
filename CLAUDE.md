@@ -43,7 +43,7 @@ All application code lives in `composeApp/src/`, a single Gradle module with thr
 
 - `commonMain` — all logic and UI; runs on Android and (eventually) iOS
 - `androidMain` — thin Android wiring: `MainActivity`, `AndroidOrientationSensor`,
-  `AndroidLocationProvider`
+  `AndroidLocationProvider`, `AndroidMagneticDeclinationProvider`, `AndroidCameraCapture`
 - `iosMain` — stub sensor/location implementations, `MainViewController`
 
 ### `commonMain` package layout
@@ -56,10 +56,10 @@ All application code lives in `composeApp/src/`, a single Gradle module with thr
 | `astro/ephemeris/` | `SunEphemeris`, `MoonEphemeris`, `PlanetEphemeris` (JPL Keplerian elements), `SolarSystemEphemeris` facade |
 | `astro/io/` | `BinaryReader` — little-endian reader for the catalog blobs (no `java.nio` in `commonMain`) |
 | `catalog/` | `SkyObject` sealed interface (`StarObject`, `DeepSkyObject`, `SolarSystemObject`), `CatalogFormat` (binary decode), `CatalogRepository`, `CatalogSearch` |
-| `alignment/` | `AlignmentPoint`, `AlignmentModel`, `AlignmentSolver` (yaw-only + Davenport q-method via `JacobiEigenSolver`), `AlignmentStore` |
+| `alignment/` | `AlignmentPoint`, `AlignmentModel`, `AlignmentSolver` (yaw-only + Davenport q-method via `JacobiEigenSolver`), `AlignmentStore`, `PlateSolveAlignment`, `CompassAlignment` (magnetometer-only `sensorToSky`, no points behind it) |
 | `sensors/` | `OrientationSensor` interface, `SensorCapabilities`/`defaultSource()` (auto-selection logic), `FakeOrientationSensor` |
-| `location/` | `ObserverLocation`, `LocationProvider` interface, `LocationResolver` (manual-override-wins-over-GPS) |
-| `guiding/` | `TelescopeAxis`, `AbsoluteReference`, `PointingService` (sensor + alignment fusion), `GuidanceCalculator`, `CurrentPosition` (target alt/az right now) |
+| `location/` | `ObserverLocation`, `LocationProvider` interface, `LocationResolver` (manual-override-wins-over-GPS), `MagneticDeclinationProvider` interface |
+| `guiding/` | `TelescopeAxis`, `AbsoluteReference` (+ `AlignmentAbsoluteReference`, `CompassAbsoluteReference`, `PrioritizedAbsoluteReference`), `PointingService` (sensor + reference fusion), `GuidanceCalculator`, `CurrentPosition` (target alt/az right now) |
 | `settings/` | `AppPreferences` — multiplatform-settings-backed, hand-rolled reactive (`MutableStateFlow` seeded from storage + setter that persists), same pattern as lightnet-mobile's `DemoSettings` |
 | `ui/screens/` | `SearchScreen`, `GuidanceScreen`, `AlignmentScreen`, `SettingsScreen` |
 | `ui/components/` | `ArrowIndicator`, `DeltaBar`, `SkyMap` (pannable/zoomable alt-az chart) |
@@ -77,11 +77,18 @@ same convention as lightnet-mobile.
 sensor's own reference frame to true sky (ENU) — from 2 or 3 star syncs via Davenport's q-method,
 chosen over Kabsch/SVD because it cannot return a reflection. There is no from-scratch 1-star
 path; `AlignmentScreen` walks the user through syncs one star at a time (pick a star, point the
-telescope at it, confirm), never syncing on the tap that picks the star. `AlignmentSolver.resync()`
-is the separate one-tap drift remedy behind the Guidance screen's "Sync on this object": it
-corrects only yaw on top of an existing 2-3 star model rather than replacing it, composing the
-same yaw-only math onto `existingModel.sensorToSky` instead of solving from scratch -- replacing
-the model outright would discard the mounting correction the original 2-3 star fit absorbed.
+telescope at it, confirm), never syncing on the tap that picks the star. The last confirm solves
+immediately and shows the RMS with an OK that saves and closes — there is no separate "compute"
+step, and the solve is a `remember`-derived value rather than an effect writing state.
+
+`AlignmentSolver.resync()` is the separate one-tap drift remedy behind the Guidance screen's
+"Sync on this object": it corrects only yaw on top of an existing 2-3 star model rather than
+replacing it, composing the same yaw-only math onto `existingModel.sensorToSky` instead of solving
+from scratch -- replacing the model outright would discard the mounting correction the original
+2-3 star fit absorbed. For the same reason it is unavailable with no model at all: yaw-correcting
+the compass fallback would persist something the UI presents as a real alignment while carrying
+the compass's entirely uncorrected mounting offset. Plate solving is the honest upgrade out of
+compass mode — one photo yields a complete 3-DOF fit with no prior model.
 
 **Invariant**: each `AlignmentPoint.skyDirection` is computed *at that point's own capture time*,
 never recomputed later at model-solve time — the sky moves ~15"/s, so doing otherwise bakes sky
@@ -89,11 +96,20 @@ rotation into the fit. See the doc comment on `AlignmentPoint` before touching t
 
 ### Pointing fusion
 
-`PointingService` combines the continuous relative sensor stream with one `AbsoluteReference`
-(the alignment model). This is a deliberate seam: a future camera plate-solve would be a second,
-self-refreshing `AbsoluteReference` implementation plugged in here, not a rewrite of the pointing
-path. `AlignmentPoint.source` similarly exists so a camera-derived sync is a first-class input
-later, even though only `MANUAL_SYNC`/`RE_SYNC` exist today.
+`PointingService` combines the continuous relative sensor stream with exactly one
+`AbsoluteReference`. Two implementations exist, combined by `PrioritizedAbsoluteReference`
+(preferred one wins outright, never blended):
+
+- `AlignmentAbsoluteReference` — the star-alignment model, including plate solves applied on top
+  of it. Established once per sync.
+- `CompassAbsoluteReference` — the magnetometer fallback, so a user with no alignment gets a
+  roughly-right arrow instead of a "Not aligned" wall. Self-refreshing on every sensor reading.
+
+`AbsoluteReferenceState.origin` is what screens key off to tell the two apart —
+`uncertaintyDegrees` cannot, since a star fit with a poor residual is still a star fit. Compass
+mode is the *only* thing that warrants telling the user the whole solution is provisional, and
+`GuidanceScreen` swaps its sync-age line and "Sync on this object" chip for a rough banner and
+an "Align" chip when it is active.
 
 ### Guidance math
 

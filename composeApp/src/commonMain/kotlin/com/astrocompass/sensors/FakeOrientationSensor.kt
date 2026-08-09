@@ -1,6 +1,5 @@
 package com.astrocompass.sensors
 
-import com.astrocompass.astro.Angle
 import com.astrocompass.astro.Quaternion
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -16,8 +15,8 @@ class FakeOrientationSensor(
     private val _orientation = MutableStateFlow<DeviceOrientation?>(null)
     override val orientation: StateFlow<DeviceOrientation?> = _orientation
 
-    private val _compassBootstrapAzimuth = MutableStateFlow<Angle?>(null)
-    override val compassBootstrapAzimuth: StateFlow<Angle?> = _compassBootstrapAzimuth
+    private val _magneticDeviceToWorld = MutableStateFlow<Quaternion?>(null)
+    override val magneticDeviceToWorld: StateFlow<Quaternion?> = _magneticDeviceToWorld
 
     var started: Boolean = false
         private set
@@ -29,7 +28,7 @@ class FakeOrientationSensor(
         _orientation.value = DeviceOrientation(deviceToWorld, activeSource, timestampMillis)
     }
 
-    fun emitCompassBootstrap(azimuth: Angle?) {
-        _compassBootstrapAzimuth.value = azimuth
+    fun emitMagnetic(deviceToWorld: Quaternion?) {
+        _magneticDeviceToWorld.value = deviceToWorld
     }
 }

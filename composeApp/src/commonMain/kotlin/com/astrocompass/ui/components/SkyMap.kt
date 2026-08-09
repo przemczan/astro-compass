@@ -22,6 +22,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.text.TextMeasurer
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.drawText
 import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.unit.IntSize
@@ -58,6 +59,14 @@ private const val PLANET_DRAW_MAGNITUDE = -10f
 private val DSO_GLYPH_RADIUS_DP = 6.dp
 private val MARKER_RADIUS_DP = 10.dp
 private val HORIZON_SAMPLE_COUNT = 96
+private const val HORIZON_STROKE_WIDTH = 4f
+private const val GRATICULE_STROKE_WIDTH = 1.5f
+private val GRATICULE_DASH_EFFECT = PathEffect.dashPathEffect(floatArrayOf(8f, 8f))
+/** Altitude rings drawn at these steps -- 0° (the horizon) and 90° (the zenith, a single point)
+ *  are excluded since [drawHorizon] already draws the former and the latter has no circle. */
+private val GRATICULE_ALTITUDE_STEPS_DEGREES = listOf(30.0, 60.0)
+private val GRATICULE_AZIMUTH_STEP_DEGREES = 30.0
+private val GRATICULE_RADIAL_SAMPLE_COUNT = 18
 
 /**
  * A pannable/zoomable alt-az sky chart: catalog objects as dots/glyphs, an optional set of
@@ -100,6 +109,7 @@ fun SkyMap(
 
     val backgroundColor = MaterialTheme.colorScheme.surface
     val constellationLineColor = MaterialTheme.colorScheme.outlineVariant
+    val graticuleColor = MaterialTheme.colorScheme.outline
     val horizonColor = MaterialTheme.colorScheme.outline
     val cardinalColor = MaterialTheme.colorScheme.onSurfaceVariant
     val starColor = MaterialTheme.colorScheme.onSurface
@@ -109,7 +119,7 @@ fun SkyMap(
     val labelColor = MaterialTheme.colorScheme.onSurfaceVariant
     val textMeasurer = rememberTextMeasurer()
     val labelStyle = MaterialTheme.typography.labelSmall.copy(color = labelColor)
-    val cardinalStyle = MaterialTheme.typography.labelMedium.copy(color = cardinalColor)
+    val cardinalStyle = MaterialTheme.typography.titleMedium.copy(color = cardinalColor, fontWeight = FontWeight.Bold)
 
     Canvas(
         modifier
@@ -158,6 +168,7 @@ fun SkyMap(
         val maxPlaneX = (this.size.width / 2.0 / pixelsPerUnit) * SkyMapScene.VIEWPORT_BOUNDS_MARGIN
         val maxPlaneY = (this.size.height / 2.0 / pixelsPerUnit) * SkyMapScene.VIEWPORT_BOUNDS_MARGIN
 
+        drawGraticule(projection, ::toScreen, graticuleColor, maxPlaneX, maxPlaneY)
         drawConstellationLines(constellationLines, projection, ::toScreen, constellationLineColor, maxPlaneX, maxPlaneY)
         drawHorizon(projection, ::toScreen, horizonColor, maxPlaneX, maxPlaneY)
         drawCardinalPoints(projection, ::toScreen, textMeasurer, cardinalStyle)
@@ -200,7 +211,35 @@ private fun DrawScope.drawHorizon(
     val directions = (0..HORIZON_SAMPLE_COUNT).map { i ->
         HorizontalCoordinates(Angle.ofDegrees(360.0 * i / HORIZON_SAMPLE_COUNT), Angle.ZERO).toEnu()
     }
-    drawDirectionPolyline(directions, projection, toScreen, color, strokeWidth = 2f, maxPlaneX, maxPlaneY)
+    drawDirectionPolyline(directions, projection, toScreen, color, strokeWidth = HORIZON_STROKE_WIDTH, maxPlaneX, maxPlaneY)
+}
+
+/** Alt-az graticule: rings of constant altitude ([GRATICULE_ALTITUDE_STEPS_DEGREES], the "latitude"
+ *  lines) plus radials of constant azimuth every [GRATICULE_AZIMUTH_STEP_DEGREES] from the horizon
+ *  to the zenith (the "longitude" lines) -- drawn the same way as [drawHorizon] and
+ *  [drawConstellationLines], straight from ENU directions rather than through [SkyMapScene]. */
+private fun DrawScope.drawGraticule(
+    projection: StereographicProjection,
+    toScreen: (PlanePoint) -> Offset,
+    color: Color,
+    maxPlaneX: Double,
+    maxPlaneY: Double,
+) {
+    for (altitudeDegrees in GRATICULE_ALTITUDE_STEPS_DEGREES) {
+        val ring = (0..HORIZON_SAMPLE_COUNT).map { i ->
+            HorizontalCoordinates(Angle.ofDegrees(360.0 * i / HORIZON_SAMPLE_COUNT), Angle.ofDegrees(altitudeDegrees)).toEnu()
+        }
+        drawDirectionPolyline(ring, projection, toScreen, color, strokeWidth = GRATICULE_STROKE_WIDTH, maxPlaneX, maxPlaneY, GRATICULE_DASH_EFFECT)
+    }
+
+    var azimuthDegrees = 0.0
+    while (azimuthDegrees < 360.0) {
+        val radial = (0..GRATICULE_RADIAL_SAMPLE_COUNT).map { i ->
+            HorizontalCoordinates(Angle.ofDegrees(azimuthDegrees), Angle.ofDegrees(90.0 * i / GRATICULE_RADIAL_SAMPLE_COUNT)).toEnu()
+        }
+        drawDirectionPolyline(radial, projection, toScreen, color, strokeWidth = GRATICULE_STROKE_WIDTH, maxPlaneX, maxPlaneY, GRATICULE_DASH_EFFECT)
+        azimuthDegrees += GRATICULE_AZIMUTH_STEP_DEGREES
+    }
 }
 
 private fun DrawScope.drawConstellationLines(
@@ -229,6 +268,7 @@ private fun DrawScope.drawDirectionPolyline(
     strokeWidth: Float,
     maxPlaneX: Double,
     maxPlaneY: Double,
+    pathEffect: PathEffect? = null,
 ) {
     val path = Path()
     var started = false
@@ -247,7 +287,7 @@ private fun DrawScope.drawDirectionPolyline(
             path.lineTo(screen.x, screen.y)
         }
     }
-    drawPath(path, color, style = Stroke(width = strokeWidth))
+    drawPath(path, color, style = Stroke(width = strokeWidth, pathEffect = pathEffect))
 }
 
 private fun DrawScope.drawCardinalPoints(

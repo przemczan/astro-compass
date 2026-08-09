@@ -10,6 +10,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import com.astrocompass.sensors.AndroidOrientationSensor
 import com.astrocompass.sensors.SensorSource
 import com.astrocompass.location.AndroidLocationProvider
+import com.astrocompass.location.AndroidMagneticDeclinationProvider
 import com.astrocompass.platesolve.AndroidCameraCapture
 import com.russhwolf.settings.SharedPreferencesSettings
 import kotlinx.coroutines.CoroutineScope
@@ -44,6 +45,7 @@ class MainActivity : ComponentActivity() {
             orientationSensor = AndroidOrientationSensor(applicationContext, sensorOverride),
             locationProvider = AndroidLocationProvider(applicationContext),
             cameraCapture = AndroidCameraCapture(applicationContext),
+            magneticDeclinationProvider = AndroidMagneticDeclinationProvider(),
             settings = settings,
         )
 

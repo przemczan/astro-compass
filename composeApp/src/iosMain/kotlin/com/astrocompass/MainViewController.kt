@@ -2,6 +2,7 @@ package com.astrocompass
 
 import androidx.compose.ui.window.ComposeUIViewController
 import com.astrocompass.location.StubLocationProvider
+import com.astrocompass.location.StubMagneticDeclinationProvider
 import com.astrocompass.platesolve.StubCameraCapture
 import com.astrocompass.sensors.StubOrientationSensor
 import com.russhwolf.settings.NSUserDefaultsSettings
@@ -16,6 +17,7 @@ fun MainViewController() = ComposeUIViewController {
         orientationSensor = StubOrientationSensor(),
         locationProvider = StubLocationProvider(),
         cameraCapture = StubCameraCapture(),
+        magneticDeclinationProvider = StubMagneticDeclinationProvider(),
         settings = NSUserDefaultsSettings(NSUserDefaults.standardUserDefaults),
     )
     GuiderApp(container)

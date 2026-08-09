@@ -183,14 +183,19 @@ private fun ToleranceSection(preferences: AppPreferences) {
     )
 }
 
+private const val MAGNITUDE_LIMIT_MIN = 1f
+private const val MAGNITUDE_LIMIT_MAX = 16f
+private const val MAGNITUDE_LIMIT_STEP = 0.5f
+
 @Composable
 private fun MagnitudeLimitSection(preferences: AppPreferences) {
     val current by preferences.magnitudeLimit.collectAsState()
-    Text("mag $current or brighter", style = MaterialTheme.typography.bodyMedium)
+    Text("mag ${formatDegrees(current.toDouble())} or brighter", style = MaterialTheme.typography.bodyMedium)
     Slider(
         value = current,
         onValueChange = { preferences.setMagnitudeLimit(it) },
-        valueRange = 1f..16f,
+        valueRange = MAGNITUDE_LIMIT_MIN..MAGNITUDE_LIMIT_MAX,
+        steps = ((MAGNITUDE_LIMIT_MAX - MAGNITUDE_LIMIT_MIN) / MAGNITUDE_LIMIT_STEP).toInt() - 1,
     )
 }
 

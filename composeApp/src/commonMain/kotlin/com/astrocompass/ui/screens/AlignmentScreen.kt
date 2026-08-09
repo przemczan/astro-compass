@@ -62,6 +62,10 @@ private const val SUGGESTION_MIN_ALTITUDE_DEGREES = 15.0
 private const val MIN_SEPARATION_FOR_SUGGESTIONS_DEGREES = 30.0
 private const val MAX_SUGGESTIONS = 50
 
+/** How the list view orders [suggestStars]'s result -- [MAGNITUDE] matches the order the function
+ *  already returns (brightest first), so that mode needs no re-sort. */
+private enum class StarSortMode(val label: String) { MAGNITUDE("Magnitude"), NAME("Name") }
+
 @Composable
 fun AlignmentScreen(
     catalogRepository: CatalogRepository,
@@ -74,9 +78,17 @@ fun AlignmentScreen(
     var starCount by remember { mutableStateOf(2) }
     var points by remember { mutableStateOf(listOf<AlignmentPoint>()) }
     var pendingTarget by remember { mutableStateOf<StarObject?>(null) }
-    var result by remember { mutableStateOf<AlignmentResult?>(null) }
     var mapMode by remember { mutableStateOf(false) }
+    var sortMode by remember { mutableStateOf(StarSortMode.MAGNITUDE) }
     var viewport by remember { mutableStateOf(SkyMapViewport.DEFAULT) }
+
+    // Derived, not state written from an effect: the solve is pure and instant, so the last
+    // "Confirm sync" completes the alignment on its own instead of parking the user on a
+    // "Compute" button. Solving at the final point's capture time rather than "now" keeps the
+    // model's timestamp on the same instant the fit actually describes.
+    val result = remember(points, starCount) {
+        if (points.size == starCount) AlignmentSolver.solve(points, points.last().capturedAtEpochMillis) else null
+    }
 
     var now by remember { mutableStateOf(currentEpochMillis()) }
     LaunchedEffect(Unit) {
@@ -91,6 +103,12 @@ fun AlignmentScreen(
         if (!catalogLoaded) emptyList() else suggestStars(catalogRepository, location, now, points.map { it.skyDirection })
     }
     val suggestedIds = remember(suggestions) { suggestions.map { it.id }.toSet() }
+    val sortedSuggestions = remember(suggestions, sortMode) {
+        when (sortMode) {
+            StarSortMode.MAGNITUDE -> suggestions
+            StarSortMode.NAME -> suggestions.sortedBy { it.displayName }
+        }
+    }
     val starDirections = remember(catalogLoaded, now) {
         if (!catalogLoaded) emptyList() else SkyMapDirectionCache.build(catalogRepository.all.filterIsInstance<StarObject>(), location, now)
     }
@@ -127,7 +145,6 @@ fun AlignmentScreen(
                             starCount = count
                             points = points.take(count)
                             pendingTarget = null
-                            result = null
                         },
                         shape = androidx.compose.material3.SegmentedButtonDefaults.itemShape(index, 2),
                         label = { Text("$count stars") },
@@ -145,7 +162,7 @@ fun AlignmentScreen(
                     ListItem(
                         headlineContent = { Text(catalogRepository.byId(point.targetId)?.displayName ?: point.targetId) },
                         trailingContent = {
-                            IconButton(onClick = { points = points.toMutableList().also { it.removeAt(index) }; result = null }) {
+                            IconButton(onClick = { points = points.toMutableList().also { it.removeAt(index) } }) {
                                 Icon(Icons.Default.Close, contentDescription = "Remove")
                             }
                         },
@@ -154,36 +171,30 @@ fun AlignmentScreen(
                 HorizontalDivider(Modifier.padding(vertical = 8.dp))
             }
 
-            when (val r = result) {
-                is AlignmentResult.Success -> AlignmentSuccessCard(r, onSave = { onSaveModel(r.model); onBack() })
-                is AlignmentResult.Failure -> Text(
-                    r.reason,
-                    color = MaterialTheme.colorScheme.error,
-                    modifier = Modifier.padding(bottom = 8.dp),
-                )
-                null -> Unit
-            }
-
             val target = pendingTarget
             when {
+                result is AlignmentResult.Success ->
+                    AlignmentCompleteCard(result, onDone = { onSaveModel(result.model); onBack() })
+
                 target != null -> ConfirmSyncStep(
                     target = target,
                     location = location,
                     nowEpochMillis = now,
                     existingPoints = points,
                     onConfirm = {
-                        val point = onCapturePoint(target, AlignmentSource.MANUAL_SYNC, now)
-                        if (point != null) {
-                            points = points + point
-                            result = null
-                        }
+                        onCapturePoint(target, AlignmentSource.MANUAL_SYNC, now)?.let { points = points + it }
                         pendingTarget = null
                     },
                     onPickDifferentStar = { pendingTarget = null },
                 )
 
-                points.size == starCount -> Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
-                    Button(onClick = { result = AlignmentSolver.solve(points, now) }) { Text("Compute alignment") }
+                result is AlignmentResult.Failure -> Column {
+                    Text(result.reason, color = MaterialTheme.colorScheme.error)
+                    Text(
+                        "Remove one of the stars above, then pick a different one.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        modifier = Modifier.padding(top = 8.dp),
+                    )
                 }
 
                 else -> Column(Modifier.fillMaxWidth().weight(1f)) {
@@ -222,8 +233,18 @@ fun AlignmentScreen(
                             modifier = Modifier.fillMaxWidth().weight(1f),
                         )
                     } else {
+                        SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth().padding(bottom = 8.dp)) {
+                            StarSortMode.entries.forEachIndexed { index, mode ->
+                                SegmentedButton(
+                                    selected = sortMode == mode,
+                                    onClick = { sortMode = mode },
+                                    shape = androidx.compose.material3.SegmentedButtonDefaults.itemShape(index, StarSortMode.entries.size),
+                                    label = { Text("Sort: ${mode.label}") },
+                                )
+                            }
+                        }
                         LazyColumn(contentPadding = PaddingValues(bottom = 24.dp)) {
-                            items(suggestions) { star ->
+                            items(sortedSuggestions) { star ->
                                 val horizontal = star.currentHorizontal(location, now)
                                 ListItem(
                                     headlineContent = { Text(star.displayName) },
@@ -301,17 +322,19 @@ private fun ConfirmSyncStep(
     }
 }
 
+/** The last sync's confirmation: the model is already solved by the time this appears, so the
+ *  only remaining decision is whether to keep it -- [onDone] saves it and leaves the screen. */
 @Composable
-private fun AlignmentSuccessCard(result: AlignmentResult.Success, onSave: () -> Unit) {
+private fun AlignmentCompleteCard(result: AlignmentResult.Success, onDone: () -> Unit) {
     Card(Modifier.fillMaxWidth().padding(bottom = 16.dp)) {
         Column(Modifier.padding(16.dp)) {
             Row {
                 Icon(Icons.Default.Check, contentDescription = null)
-                Text(" Alignment ready", style = MaterialTheme.typography.titleMedium)
+                Text(" Alignment complete", style = MaterialTheme.typography.titleMedium)
             }
             Text("RMS residual: ${formatDegrees(result.model.rmsResidualDegrees)}°")
             Row(Modifier.fillMaxWidth().padding(top = 12.dp), horizontalArrangement = Arrangement.Center) {
-                Button(onClick = onSave) { Text("Save alignment") }
+                Button(onClick = onDone) { Text("OK") }
             }
         }
     }

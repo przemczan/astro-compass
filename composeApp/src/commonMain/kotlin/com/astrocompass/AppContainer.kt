@@ -18,12 +18,16 @@ import com.astrocompass.astro.time.currentEpochMillis
 import com.astrocompass.catalog.CatalogRepository
 import com.astrocompass.catalog.SkyObject
 import com.astrocompass.catalog.StarObject
+import com.astrocompass.guiding.AbsoluteReference
 import com.astrocompass.guiding.AlignmentAbsoluteReference
+import com.astrocompass.guiding.CompassAbsoluteReference
 import com.astrocompass.guiding.PlateSolveAttempt
 import com.astrocompass.guiding.PointingService
+import com.astrocompass.guiding.PrioritizedAbsoluteReference
 import com.astrocompass.guiding.currentHorizontal
 import com.astrocompass.location.LocationProvider
 import com.astrocompass.location.LocationResolver
+import com.astrocompass.location.MagneticDeclinationProvider
 import com.astrocompass.location.ObserverLocation
 import com.astrocompass.platesolve.CameraCapture
 import com.astrocompass.platesolve.CapturedFrame
@@ -65,17 +69,30 @@ class AppContainer(
     val orientationSensor: OrientationSensor,
     val locationProvider: LocationProvider,
     val cameraCapture: CameraCapture,
+    magneticDeclinationProvider: MagneticDeclinationProvider,
     settings: Settings,
 ) {
     val preferences = AppPreferences(settings)
     val catalogRepository = CatalogRepository()
     val alignmentStore = AlignmentStore(settings)
-    val absoluteReference = AlignmentAbsoluteReference()
     val locationResolver = LocationResolver(scope, locationProvider, preferences.manualLocation)
+
+    // Seeded here rather than in `init`: PrioritizedAbsoluteReference captures its initial value
+    // at construction, and a stored alignment must be visible in it from the very first frame --
+    // otherwise the Guidance screen can flash "Not aligned" before the flow's first emission.
+    private val alignmentReference = AlignmentAbsoluteReference().apply { update(alignmentStore.load()) }
+    private val compassReference =
+        CompassAbsoluteReference(scope, orientationSensor, locationResolver.resolved, magneticDeclinationProvider)
+
+    /** Star alignment when there is one, rough compass otherwise -- see
+     *  [PrioritizedAbsoluteReference]. Screens distinguish the two by
+     *  [AbsoluteReferenceState.origin][com.astrocompass.guiding.AbsoluteReferenceState.origin]. */
+    val absoluteReference: AbsoluteReference =
+        PrioritizedAbsoluteReference(scope, preferred = alignmentReference, fallback = compassReference)
+
     val pointingService = PointingService(scope, orientationSensor, absoluteReference, preferences.telescopeAxis)
 
     init {
-        absoluteReference.update(alignmentStore.load())
         scope.launch { catalogRepository.load() }
         orientationSensor.start()
         locationProvider.start()
@@ -83,12 +100,13 @@ class AppContainer(
 
     fun saveAlignment(model: AlignmentModel) {
         alignmentStore.save(model)
-        absoluteReference.update(model)
+        alignmentReference.update(model)
     }
 
+    /** Drops back to the rough compass reference, if this device can supply one. */
     fun clearAlignment() {
         alignmentStore.clear()
-        absoluteReference.update(null)
+        alignmentReference.update(null)
     }
 
     /** Captures one star sync: the configured telescope axis, in both frames, right now. Null
@@ -105,26 +123,30 @@ class AppContainer(
     /** One-tap yaw-only re-sync against whatever is currently selected on the Guidance screen --
      *  the primary remedy for gyro drift, reachable without re-entering the alignment flow.
      *  Composes onto the existing model (see [AlignmentSolver.resync]) rather than replacing it,
-     *  so a prior 2-3 star fit's mounting correction survives the re-sync. Falls back to a
-     *  from-scratch yaw-only solve only if there is no existing model yet. */
+     *  so a prior 2-3 star fit's mounting correction survives the re-sync.
+     *
+     *  Null without a star alignment to correct: a yaw-only sync on top of the compass fallback
+     *  would look like a real alignment while carrying the compass's uncorrected mounting offset,
+     *  which is exactly the thing a 2-3 star fit exists to absorb. Plate solving is the honest
+     *  one-shot upgrade from compass mode -- see [attemptPlateSolve]. */
     fun syncOnObject(target: SkyObject, nowEpochMillis: Long): AlignmentResult? {
+        val existingModel = alignmentStore.load() ?: return null
         val point = captureAlignmentPoint(target, AlignmentSource.RE_SYNC, nowEpochMillis) ?: return null
-        val existingModel = alignmentStore.load()
-        val result = if (existingModel != null) {
-            AlignmentSolver.resync(existingModel, point, nowEpochMillis)
-        } else {
-            AlignmentSolver.solve(listOf(point), nowEpochMillis)
-        }
+        val result = AlignmentSolver.resync(existingModel, point, nowEpochMillis)
         if (result is AlignmentResult.Success) saveAlignment(result.model)
         return result
     }
 
     /**
      * Takes one photo and plate-solves it against the loaded catalog, seeded from wherever
-     * [pointingService] currently thinks the telescope points -- so this is a drift *corrector*,
-     * not a from-scratch alignment: it requires an existing sync (null pointing direction) the
-     * same way [syncOnObject] does. Returns null if there's no existing pointing/location yet, the
-     * camera capture failed, or too few stars matched.
+     * [pointingService] currently thinks the telescope points. Returns null if there's no pointing
+     * direction or location yet, the camera capture failed, or too few stars matched.
+     *
+     * The seed can equally be the rough compass reference, which makes this the one path from
+     * "no alignment at all" to a real one: [PlateSolveAlignment] recovers a complete 3-DOF fit
+     * from a single photo, mounting offset included. It is not guaranteed from a compass seed
+     * though -- magnetometer error near a telescope can exceed [PLATE_SOLVE_SEARCH_RADIUS], in
+     * which case the solve simply finds nothing.
      *
      * The orientation sensor reading and clock time are read immediately after
      * [CameraCapture.captureFrame] returns, before the (comparatively slow) detection/matching

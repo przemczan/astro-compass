@@ -1,6 +1,6 @@
 package com.astrocompass.sensors
 
-import com.astrocompass.astro.Angle
+import com.astrocompass.astro.Quaternion
 import kotlinx.coroutines.flow.StateFlow
 
 /**
@@ -14,10 +14,12 @@ interface OrientationSensor {
     val activeSource: SensorSource
     val orientation: StateFlow<DeviceOrientation?>
 
-    /** Rough compass-only azimuth, used solely to suggest which alignment stars are currently
-     *  above the horizon before the first sync. Null with no magnetometer, or once real
-     *  alignment data is available -- this is a bootstrap, not a pointing source. */
-    val compassBootstrapAzimuth: StateFlow<Angle?>
+    /** Device-to-world rotation in the *magnetometer*-referenced world frame (gravity up, +Y
+     *  toward magnetic north), regardless of which frame [orientation] reports in. This is the
+     *  raw material for [com.astrocompass.guiding.CompassAbsoluteReference]: differencing it
+     *  against [orientation] recovers the yaw between the active sensor frame and magnetic
+     *  north. Null with no magnetometer. */
+    val magneticDeviceToWorld: StateFlow<Quaternion?>
 
     fun start()
     fun stop()

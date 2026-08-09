@@ -5,11 +5,9 @@ import android.hardware.Sensor
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
 import android.hardware.SensorManager
-import com.astrocompass.astro.Angle
 import com.astrocompass.astro.Quaternion
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
-import kotlin.math.atan2
 
 /**
  * Android's rotation-vector family of sensors already reports device-to-world orientation in a
@@ -37,17 +35,24 @@ class AndroidOrientationSensor(context: Context, overrideSource: SensorSource? =
     private val _orientation = MutableStateFlow<DeviceOrientation?>(null)
     override val orientation: StateFlow<DeviceOrientation?> = _orientation
 
-    private val _compassBootstrapAzimuth = MutableStateFlow<Angle?>(null)
-    override val compassBootstrapAzimuth: StateFlow<Angle?> = _compassBootstrapAzimuth
+    private val _magneticDeviceToWorld = MutableStateFlow<Quaternion?>(null)
+    override val magneticDeviceToWorld: StateFlow<Quaternion?> = _magneticDeviceToWorld
 
     private val activeSensorType = activeSource.toAndroidSensorType()
-    private val needsSeparateCompassBootstrap = capabilities.hasMagnetometer && activeSource != SensorSource.ROTATION_VECTOR
+
+    /** [SensorSource.GAME_ROTATION_VECTOR] is the only source whose world frame is *not*
+     *  magnetometer-referenced, so it is the only one needing `TYPE_ROTATION_VECTOR` registered
+     *  alongside it -- at a slower rate, since it only has to track a slowly-changing yaw offset
+     *  rather than the telescope's motion. Every other source is its own magnetic reference,
+     *  which is both cheaper and exact (no two-stream sampling lag to leak into the yaw). */
+    private val needsSeparateMagneticStream =
+        capabilities.hasMagnetometer && activeSource == SensorSource.GAME_ROTATION_VECTOR
 
     override fun start() {
         sensorManager.getDefaultSensor(activeSensorType)?.let {
             sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME)
         }
-        if (needsSeparateCompassBootstrap) {
+        if (needsSeparateMagneticStream) {
             sensorManager.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR)?.let {
                 sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_UI)
             }
@@ -61,10 +66,14 @@ class AndroidOrientationSensor(context: Context, overrideSource: SensorSource? =
     override fun onSensorChanged(event: SensorEvent) {
         val quaternion = event.values.toQuaternion()
         when (event.sensor.type) {
-            activeSensorType -> _orientation.value = DeviceOrientation(quaternion, activeSource, event.timestamp)
-            Sensor.TYPE_ROTATION_VECTOR -> if (needsSeparateCompassBootstrap) {
-                _compassBootstrapAzimuth.value = quaternion.worldAzimuth()
+            activeSensorType -> {
+                _orientation.value = DeviceOrientation(quaternion, activeSource, event.timestamp)
+                if (!needsSeparateMagneticStream && capabilities.hasMagnetometer) {
+                    _magneticDeviceToWorld.value = quaternion
+                }
             }
+
+            Sensor.TYPE_ROTATION_VECTOR -> _magneticDeviceToWorld.value = quaternion
         }
     }
 
@@ -76,13 +85,6 @@ class AndroidOrientationSensor(context: Context, overrideSource: SensorSource? =
         val z = this[2].toDouble()
         val w = if (size >= 4) this[3].toDouble() else kotlin.math.sqrt((1.0 - x * x - y * y - z * z).coerceAtLeast(0.0))
         return Quaternion(w, x, y, z).normalized()
-    }
-
-    /** Azimuth of the device's own +Y (top edge) axis, world-frame -- a reasonable single number
-     *  for "which way is this phone roughly facing" before any star sync exists. */
-    private fun Quaternion.worldAzimuth(): Angle {
-        val topEdgeInWorld = rotate(com.astrocompass.astro.Vector3(0.0, 1.0, 0.0))
-        return Angle.ofRadians(atan2(topEdgeInWorld.x, topEdgeInWorld.y)).normalized()
     }
 
     private fun SensorSource.toAndroidSensorType(): Int = when (this) {

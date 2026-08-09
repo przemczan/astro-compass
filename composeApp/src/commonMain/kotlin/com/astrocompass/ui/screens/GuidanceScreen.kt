@@ -50,6 +50,7 @@ import com.astrocompass.guiding.AbsoluteReferenceState
 import com.astrocompass.guiding.GuidanceCalculator
 import com.astrocompass.guiding.PlateSolveAttempt
 import com.astrocompass.guiding.PointingService
+import com.astrocompass.guiding.ReferenceOrigin
 import com.astrocompass.guiding.currentHorizontal
 import com.astrocompass.location.ObserverLocation
 import com.astrocompass.ui.components.ArrowIndicator
@@ -67,6 +68,8 @@ private const val CATALOG_REFRESH_INTERVAL_MS = 5_000L
 private const val SYNC_AGE_AMBER_SECONDS = 5 * 60L
 private const val SYNC_AGE_RED_SECONDS = 15 * 60L
 private const val STABILIZATION_MILLIS = 2_000L
+
+private val WarningAmber = Color(0xFFFFA000)
 
 /** Local UI state for the "Platesolve" flow -- not reachable until [GuidanceScreen] has already
  *  gated on being aligned, since [com.astrocompass.AppContainer.attemptPlateSolve] requires an
@@ -96,7 +99,6 @@ fun GuidanceScreen(
     val isAligned by pointingService.isAligned.collectAsState()
     val currentPointing by pointingService.currentSkyDirection.collectAsState()
     val reference by absoluteReference.collectAsState()
-    val syncedAt = reference?.establishedAtEpochMillis
 
     var now by remember { mutableStateOf(currentEpochMillis()) }
     LaunchedEffect(Unit) {
@@ -164,7 +166,8 @@ fun GuidanceScreen(
             )
         },
     ) { padding ->
-        if (!isAligned || currentPointing == null) {
+        val activeReference = reference
+        if (!isAligned || currentPointing == null || activeReference == null) {
             NotAlignedContent(onOpenAlignment, Modifier.padding(padding))
             return@Scaffold
         }
@@ -183,11 +186,12 @@ fun GuidanceScreen(
             Modifier.padding(padding).fillMaxSize().padding(24.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            SyncAgeChip(
-                syncedAtEpochMillis = syncedAt,
+            ReferenceStatusSection(
+                reference = activeReference,
                 nowEpochMillis = now,
                 onSync = onSyncOnThisObject,
                 onPlateSolve = { plateSolveRunId = (plateSolveRunId ?: 0) + 1 },
+                onOpenAlignment = onOpenAlignment,
             )
 
             // The map fills essentially the whole remaining screen -- same as Search/Alignment's
@@ -217,65 +221,107 @@ fun GuidanceScreen(
                     )
                 }
 
-                // A translucent scrim behind both overlays -- drawn straight on top of a busy
-                // starfield, plain text/an unfilled arrow would be unreadable against whatever
-                // happens to be behind them.
-                Column(
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    modifier = Modifier.align(Alignment.Center)
-                        .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.78f), RoundedCornerShape(20.dp))
-                        .padding(horizontal = 24.dp, vertical = 16.dp),
-                ) {
-                    ArrowIndicator(guidance.arrowAngleDegrees, guidance.isOnTarget, arrowSize = 110.dp)
-                    Text(
-                        "${formatDegrees(guidance.separationDegrees)}° away",
-                        style = MaterialTheme.typography.headlineSmall,
-                    )
-                    if (guidance.isOnTarget) {
-                        Text("On target", style = MaterialTheme.typography.labelLarge)
-                    }
-                }
-
-                Column(
-                    Modifier.align(Alignment.BottomCenter)
-                        .fillMaxWidth()
-                        .background(
-                            MaterialTheme.colorScheme.surface.copy(alpha = 0.78f),
-                            RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp),
+                // Both overlays are stacked at the bottom, not the center, so they never cover the
+                // target marker drawn on the map -- a translucent scrim behind each one, since
+                // plain text/an unfilled arrow would be unreadable against a busy starfield.
+                Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth()) {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        modifier = Modifier.align(Alignment.CenterHorizontally)
+                            .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.78f), RoundedCornerShape(20.dp))
+                            .padding(horizontal = 24.dp, vertical = 16.dp),
+                    ) {
+                        ArrowIndicator(guidance.arrowAngleDegrees, guidance.isOnTarget, arrowSize = 110.dp)
+                        Text(
+                            "${formatDegrees(guidance.separationDegrees)}° away",
+                            style = MaterialTheme.typography.headlineSmall,
                         )
-                        .padding(16.dp),
-                ) {
-                    DeltaBar("ALT", guidance.altitudeDeltaDegrees, Modifier.padding(bottom = 12.dp))
-                    DeltaBar("AZ (cross-track)", guidance.crossTrackDeltaDegrees)
+                        if (guidance.isOnTarget) {
+                            Text("On target", style = MaterialTheme.typography.labelLarge)
+                        }
+                    }
+
+                    Column(
+                        Modifier.fillMaxWidth()
+                            .padding(top = 12.dp)
+                            .background(
+                                MaterialTheme.colorScheme.surface.copy(alpha = 0.78f),
+                                RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp),
+                            )
+                            .padding(16.dp),
+                    ) {
+                        DeltaBar("ALT", guidance.altitudeDeltaDegrees, Modifier.padding(bottom = 12.dp))
+                        DeltaBar("AZ (cross-track)", guidance.crossTrackDeltaDegrees)
+                    }
                 }
             }
         }
     }
 
     val state = plateSolveState
-    if (state != null) {
+    val origin = reference?.origin
+    if (state != null && origin != null) {
         PlateSolveDialog(
             state = state,
+            origin = origin,
             onApply = { attempt -> onApplyPlateSolve(attempt); closePlateSolve() },
             onDismiss = closePlateSolve,
         )
     }
 }
 
+/** How the current pointing solution was obtained, and the one action that improves it. The two
+ *  origins get different actions on purpose: re-syncing corrects drift in a star fit, while the
+ *  compass fallback has no drift to correct -- what it lacks is the alignment itself. */
 @Composable
-private fun SyncAgeChip(syncedAtEpochMillis: Long?, nowEpochMillis: Long, onSync: () -> Unit, onPlateSolve: () -> Unit) {
-    val ageSeconds = syncedAtEpochMillis?.let { (nowEpochMillis - it) / 1000 } ?: Long.MAX_VALUE
+private fun ReferenceStatusSection(
+    reference: AbsoluteReferenceState,
+    nowEpochMillis: Long,
+    onSync: () -> Unit,
+    onPlateSolve: () -> Unit,
+    onOpenAlignment: () -> Unit,
+) {
+    Column(Modifier.fillMaxWidth()) {
+        when (reference.origin) {
+            ReferenceOrigin.STAR_ALIGNMENT -> SyncAgeText(reference.establishedAtEpochMillis, nowEpochMillis)
+            ReferenceOrigin.COMPASS -> CompassModeText()
+        }
+        Row(
+            Modifier.padding(top = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            AssistChip(onClick = onPlateSolve, label = { Text("Platesolve") })
+            when (reference.origin) {
+                ReferenceOrigin.STAR_ALIGNMENT -> AssistChip(onClick = onSync, label = { Text("Sync on this object") })
+                ReferenceOrigin.COMPASS -> AssistChip(onClick = onOpenAlignment, label = { Text("Align") })
+            }
+        }
+    }
+}
+
+@Composable
+private fun SyncAgeText(syncedAtEpochMillis: Long, nowEpochMillis: Long) {
+    val ageSeconds = (nowEpochMillis - syncedAtEpochMillis) / 1000
     val color = when {
         ageSeconds > SYNC_AGE_RED_SECONDS -> MaterialTheme.colorScheme.error
-        ageSeconds > SYNC_AGE_AMBER_SECONDS -> Color(0xFFFFA000)
+        ageSeconds > SYNC_AGE_AMBER_SECONDS -> WarningAmber
         else -> MaterialTheme.colorScheme.onSurfaceVariant
     }
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-        Text("Synced ${formatAge(ageSeconds)} ago", color = color, style = MaterialTheme.typography.bodyMedium)
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            AssistChip(onClick = onPlateSolve, label = { Text("Platesolve") })
-            AssistChip(onClick = onSync, label = { Text("Sync on this object") })
-        }
+    Text("Synced ${formatAge(ageSeconds)} ago", color = color, style = MaterialTheme.typography.bodyMedium)
+}
+
+/** No error figure quoted: the compass fallback's yaw error varies wildly with how much steel is
+ *  near the phone, and it corrects no mounting offset at all, so any number would read as a bound
+ *  it cannot honour. See [com.astrocompass.alignment.CompassAlignment]. */
+@Composable
+private fun CompassModeText() {
+    Column {
+        Text("Rough — compass only", color = WarningAmber, style = MaterialTheme.typography.bodyMedium)
+        Text(
+            "Align on stars for real accuracy.",
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            style = MaterialTheme.typography.bodySmall,
+        )
     }
 }
 
@@ -304,7 +350,12 @@ private fun NotAlignedContent(onOpenAlignment: () -> Unit, modifier: Modifier = 
  *  [com.astrocompass.guiding.CameraMounting] preset can only be caught by the user noticing the
  *  correction looks too large. */
 @Composable
-private fun PlateSolveDialog(state: PlateSolveUiState, onApply: (PlateSolveAttempt) -> Unit, onDismiss: () -> Unit) {
+private fun PlateSolveDialog(
+    state: PlateSolveUiState,
+    origin: ReferenceOrigin,
+    onApply: (PlateSolveAttempt) -> Unit,
+    onDismiss: () -> Unit,
+) {
     Dialog(onDismissRequest = onDismiss) {
         Card(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
@@ -345,9 +396,19 @@ private fun PlateSolveDialog(state: PlateSolveUiState, onApply: (PlateSolveAttem
                             style = MaterialTheme.typography.headlineSmall,
                             modifier = Modifier.padding(top = 8.dp, bottom = 4.dp),
                         )
+                        // What counts as a suspicious correction depends entirely on what is
+                        // being corrected: a star fit only drifts, while the compass fallback
+                        // starts out wrong, so the same number means opposite things.
                         Text(
-                            "A plausible drift correction is a few degrees. Tens of degrees " +
-                                "usually means the Camera mounting setting is wrong.",
+                            when (origin) {
+                                ReferenceOrigin.STAR_ALIGNMENT ->
+                                    "A plausible drift correction is a few degrees. Tens of " +
+                                        "degrees usually means the Camera mounting setting is wrong."
+
+                                ReferenceOrigin.COMPASS ->
+                                    "This replaces the rough compass estimate with a real " +
+                                        "alignment, so a correction of tens of degrees is normal here."
+                            },
                             style = MaterialTheme.typography.bodySmall,
                             modifier = Modifier.padding(bottom = 16.dp),
                         )
