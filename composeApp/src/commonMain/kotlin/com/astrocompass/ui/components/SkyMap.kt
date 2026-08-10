@@ -175,7 +175,13 @@ fun SkyMap(
 
         for (marker in markers) {
             val point = projection.project(marker.direction) ?: continue
-            drawMarker(toScreen(point), marker.color)
+            val screenPoint = toScreen(point)
+            drawMarker(screenPoint, marker.color)
+            // Unlike catalog objects, a marker's label isn't limited to the brightest few --
+            // it's how a selected/target object stays identifiable even if it wouldn't
+            // otherwise earn a label (a faint star, or any deep-sky object outside the
+            // always-labeled solar system bodies).
+            marker.label?.let { label -> drawObjectLabel(screenPoint, label, textMeasurer, labelStyle) }
         }
 
         for (projected in scene) {

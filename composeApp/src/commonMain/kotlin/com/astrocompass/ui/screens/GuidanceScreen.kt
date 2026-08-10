@@ -2,11 +2,11 @@
 
 package com.astrocompass.ui.screens
 
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -14,10 +14,12 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.GpsFixed
-import androidx.compose.material.icons.filled.GpsNotFixed
-import androidx.compose.material3.AssistChip
+import androidx.compose.material.icons.filled.CameraAlt
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Explore
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Sync
+import androidx.compose.material3.BottomAppBar
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
@@ -28,6 +30,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.VerticalDivider
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -41,6 +44,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import com.astrocompass.astro.coords.HorizontalCoordinates
 import com.astrocompass.astro.time.currentEpochMillis
@@ -55,8 +59,12 @@ import com.astrocompass.guiding.currentHorizontal
 import com.astrocompass.location.ObserverLocation
 import com.astrocompass.ui.components.ArrowIndicator
 import com.astrocompass.ui.components.DeltaBar
+import com.astrocompass.ui.components.MAP_ZOOM_STEP_FACTOR
+import com.astrocompass.ui.components.MapFollowZoomControls
+import com.astrocompass.ui.components.mapOverlayScrim
 import com.astrocompass.ui.components.SkyMap
 import com.astrocompass.ui.components.SkyMapMarker
+import com.astrocompass.ui.components.ToolbarActionButton
 import com.astrocompass.ui.skymap.SkyMapDirectionCache
 import com.astrocompass.ui.skymap.SkyMapViewport
 import com.astrocompass.ui.theme.OnTargetGreen
@@ -68,6 +76,11 @@ private const val CATALOG_REFRESH_INTERVAL_MS = 5_000L
 private const val SYNC_AGE_AMBER_SECONDS = 5 * 60L
 private const val SYNC_AGE_RED_SECONDS = 15 * 60L
 private const val STABILIZATION_MILLIS = 2_000L
+
+// ~25% smaller than the previous 110.dp / 24.sp (headlineSmall) so the readout takes up less of
+// the map without the target marker underneath it staying hidden as long.
+private val ARROW_SIZE = 80.dp
+private val ANGLE_TEXT_SIZE = 18.sp
 
 private val WarningAmber = Color(0xFFFFA000)
 
@@ -93,7 +106,8 @@ fun GuidanceScreen(
     onPlateSolve: suspend () -> PlateSolveAttempt?,
     onApplyPlateSolve: (PlateSolveAttempt) -> Unit,
     onOpenAlignment: () -> Unit,
-    onBack: () -> Unit,
+    onOpenSettings: () -> Unit,
+    onExitGuiding: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val isAligned by pointingService.isAligned.collectAsState()
@@ -155,18 +169,50 @@ fun GuidanceScreen(
         plateSolveState = if (attempt != null) PlateSolveUiState.Result(attempt) else PlateSolveUiState.Failed
     }
 
+    // Hoisted above the Scaffold since both the content (the not-aligned gate) and the bottom
+    // toolbar (which hides Platesolve/Sync/Align until there's something to act on) need it.
+    val activeReference = reference
+    val showGuidanceActions = isAligned && currentPointing != null && activeReference != null
+
     Scaffold(
         modifier = modifier,
         topBar = {
             TopAppBar(
                 title = { Text(target.displayName) },
-                navigationIcon = {
-                    IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back") }
+                actions = {
+                    IconButton(onClick = onOpenSettings) { Icon(Icons.Default.Settings, contentDescription = "Settings") }
                 },
             )
         },
+        bottomBar = {
+            BottomAppBar {
+                Row(
+                    Modifier.fillMaxWidth().padding(horizontal = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Row(Modifier.weight(1f)) {
+                        if (showGuidanceActions) {
+                            ToolbarActionButton(
+                                icon = Icons.Default.CameraAlt,
+                                label = "Platesolve",
+                                onClick = { plateSolveRunId = (plateSolveRunId ?: 0) + 1 },
+                            )
+                            when (activeReference.origin) {
+                                ReferenceOrigin.STAR_ALIGNMENT ->
+                                    ToolbarActionButton(icon = Icons.Default.Sync, label = "Sync Az", onClick = onSyncOnThisObject)
+                                ReferenceOrigin.COMPASS ->
+                                    ToolbarActionButton(icon = Icons.Default.Explore, label = "Align", onClick = onOpenAlignment)
+                            }
+                        }
+                    }
+                    if (showGuidanceActions) {
+                        VerticalDivider(Modifier.height(32.dp).padding(horizontal = 4.dp))
+                    }
+                    ToolbarActionButton(icon = Icons.Default.Close, label = "Exit", onClick = onExitGuiding)
+                }
+            }
+        },
     ) { padding ->
-        val activeReference = reference
         if (!isAligned || currentPointing == null || activeReference == null) {
             NotAlignedContent(onOpenAlignment, Modifier.padding(padding))
             return@Scaffold
@@ -186,13 +232,7 @@ fun GuidanceScreen(
             Modifier.padding(padding).fillMaxSize().padding(24.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            ReferenceStatusSection(
-                reference = activeReference,
-                nowEpochMillis = now,
-                onSync = onSyncOnThisObject,
-                onPlateSolve = { plateSolveRunId = (plateSolveRunId ?: 0) + 1 },
-                onOpenAlignment = onOpenAlignment,
-            )
+            ReferenceStatusSection(reference = activeReference, nowEpochMillis = now)
 
             // The map fills essentially the whole remaining screen -- same as Search/Alignment's
             // map -- with the arrow/separation/delta-bar readout as overlays on top of it rather
@@ -210,49 +250,41 @@ fun GuidanceScreen(
                     ),
                     modifier = Modifier.fillMaxSize(),
                 )
-                IconButton(
-                    onClick = { followPointing = true },
-                    modifier = Modifier.align(Alignment.TopEnd),
+                MapFollowZoomControls(
+                    isFollowing = followPointing,
+                    onEnableFollow = { followPointing = true },
+                    onZoomIn = { mapViewport = mapViewport.zoomedBy(MAP_ZOOM_STEP_FACTOR) },
+                    onZoomOut = { mapViewport = mapViewport.zoomedBy(1f / MAP_ZOOM_STEP_FACTOR) },
+                    modifier = Modifier.align(Alignment.TopEnd).padding(top = 8.dp, end = 8.dp),
+                )
+
+                // The arrow/separation readout sits at the top of the map, not the center, so it
+                // never covers the target marker. The delta bars stay pinned to the opposite edge,
+                // at the bottom.
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    modifier = Modifier.align(Alignment.TopCenter)
+                        .padding(top = 8.dp)
+                        .mapOverlayScrim()
+                        .padding(horizontal = 24.dp, vertical = 16.dp),
                 ) {
-                    Icon(
-                        if (followPointing) Icons.Default.GpsFixed else Icons.Default.GpsNotFixed,
-                        contentDescription = "Follow telescope pointing",
-                        tint = if (followPointing) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                    ArrowIndicator(guidance.arrowAngleDegrees, guidance.isOnTarget, arrowSize = ARROW_SIZE)
+                    Text(
+                        "${formatDegrees(guidance.separationDegrees)}° away",
+                        style = MaterialTheme.typography.headlineSmall.copy(fontSize = ANGLE_TEXT_SIZE),
                     )
+                    if (guidance.isOnTarget) {
+                        Text("On target", style = MaterialTheme.typography.labelLarge)
+                    }
                 }
 
-                // Both overlays are stacked at the bottom, not the center, so they never cover the
-                // target marker drawn on the map -- a translucent scrim behind each one, since
-                // plain text/an unfilled arrow would be unreadable against a busy starfield.
-                Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth()) {
-                    Column(
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        modifier = Modifier.align(Alignment.CenterHorizontally)
-                            .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.78f), RoundedCornerShape(20.dp))
-                            .padding(horizontal = 24.dp, vertical = 16.dp),
-                    ) {
-                        ArrowIndicator(guidance.arrowAngleDegrees, guidance.isOnTarget, arrowSize = 110.dp)
-                        Text(
-                            "${formatDegrees(guidance.separationDegrees)}° away",
-                            style = MaterialTheme.typography.headlineSmall,
-                        )
-                        if (guidance.isOnTarget) {
-                            Text("On target", style = MaterialTheme.typography.labelLarge)
-                        }
-                    }
-
-                    Column(
-                        Modifier.fillMaxWidth()
-                            .padding(top = 12.dp)
-                            .background(
-                                MaterialTheme.colorScheme.surface.copy(alpha = 0.78f),
-                                RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp),
-                            )
-                            .padding(16.dp),
-                    ) {
-                        DeltaBar("ALT", guidance.altitudeDeltaDegrees, Modifier.padding(bottom = 12.dp))
-                        DeltaBar("AZ (cross-track)", guidance.crossTrackDeltaDegrees)
-                    }
+                Column(
+                    Modifier.align(Alignment.BottomCenter).fillMaxWidth()
+                        .mapOverlayScrim(RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp))
+                        .padding(16.dp),
+                ) {
+                    DeltaBar("ALT", guidance.altitudeDeltaDegrees, Modifier.padding(bottom = 12.dp))
+                    DeltaBar("AZ", guidance.crossTrackDeltaDegrees)
                 }
             }
         }
@@ -270,31 +302,15 @@ fun GuidanceScreen(
     }
 }
 
-/** How the current pointing solution was obtained, and the one action that improves it. The two
- *  origins get different actions on purpose: re-syncing corrects drift in a star fit, while the
- *  compass fallback has no drift to correct -- what it lacks is the alignment itself. */
+/** How the current pointing solution was obtained -- the action that improves it (Sync for a star
+ *  fit, Align for the compass fallback) lives in the bottom toolbar, see [GuidanceScreen]'s
+ *  `showGuidanceActions` block. */
 @Composable
-private fun ReferenceStatusSection(
-    reference: AbsoluteReferenceState,
-    nowEpochMillis: Long,
-    onSync: () -> Unit,
-    onPlateSolve: () -> Unit,
-    onOpenAlignment: () -> Unit,
-) {
+private fun ReferenceStatusSection(reference: AbsoluteReferenceState, nowEpochMillis: Long) {
     Column(Modifier.fillMaxWidth()) {
         when (reference.origin) {
             ReferenceOrigin.STAR_ALIGNMENT -> SyncAgeText(reference.establishedAtEpochMillis, nowEpochMillis)
             ReferenceOrigin.COMPASS -> CompassModeText()
-        }
-        Row(
-            Modifier.padding(top = 8.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            AssistChip(onClick = onPlateSolve, label = { Text("Platesolve") })
-            when (reference.origin) {
-                ReferenceOrigin.STAR_ALIGNMENT -> AssistChip(onClick = onSync, label = { Text("Sync on this object") })
-                ReferenceOrigin.COMPASS -> AssistChip(onClick = onOpenAlignment, label = { Text("Align") })
-            }
         }
     }
 }
