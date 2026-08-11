@@ -13,6 +13,9 @@ until the telescope is on it. No mount electronics, no GoTo motors required.
   on the tube
 - **Search** — stars, Messier/NGC/IC deep-sky objects, Sun/Moon/planets, ranked by match quality
   then brightness
+- **Real deep-sky photos on the map** — ~1,800 galaxies/nebulae/clusters (down to magnitude 12)
+  show their actual sky-survey photo once zoomed in close enough, framed to the object's real
+  shape and scaled/rotated to its true angular size and orientation, not a generic icon
 - **Guidance screen** — an arrow plus altitude/cross-track bars pointing the way to the target;
   turns green and pulses haptically once on target
 - **Drift-aware** — the default gyro-only sensor has no magnetometer (so a metal tube and motors
@@ -84,11 +87,12 @@ app's own build never touches the network.
 
 Bundled as `composeResources/drawable/<id>.jpg` (one per object with a photo, filename = its
 `DeepSkyObject.catalogDesignation`/`id` lowercased, e.g. `ngc0224.jpg`), looked up via
-`objectImageDrawable()` in `catalog/ObjectImages.kt`. Preparing these is a 2-step, manually-run
-offline pipeline — like the catalog blobs, only the final `.jpg`s and generated Kotlin file are
-committed, so the app's own build never touches the network. The two steps are deliberately
-separate scripts, so a staged image can be manually swapped out and picked up by a rebuild without
-re-fetching everything:
+`objectImage()` in `catalog/ObjectImages.kt` (split across chunked `when` helpers -- the JVM caps a
+single method at 64KB of bytecode, which one `when` over the full catalog exceeds). Preparing these
+is a 2-step, manually-run offline pipeline — like the catalog blobs, only the final `.jpg`s and
+generated Kotlin file are committed, so the app's own build never touches the network. The two
+steps are deliberately separate scripts, so a staged image can be manually swapped out and picked
+up by a rebuild without re-fetching everything:
 
 ```bash
 # 1. Download (network). Fetches a CDS hips2fits cutout (DSS2/color survey) for every OpenNGC
@@ -97,9 +101,9 @@ re-fetching everything:
 #    what the app can actually display. Staged into tools/image-staging-hips2fits/ (gitignored);
 #    tools/image-staging-hips2fits/manifest.json records each fetch's source/FOV/license for
 #    review. Resumable: an id whose staged file already exists is left untouched (also how manual
-#    replacement works -- overwrite the file, rerun, it's skipped) -- delete a staged file to force
-#    a genuine re-fetch.
-node tools/fetch-object-images.mjs --mag-limit 11
+#    replacement works -- overwrite the file, rerun, it's skipped) -- delete a staged file or pass
+#    --overwrite to force a re-fetch. Runs 3 requests concurrently by default (--concurrency).
+node tools/fetch-object-images.mjs --mag-limit 12
 
 # 2. Build (offline). Resizes every staged, currently-manifested image to a configurable
 #    longest-edge JPEG, writes it straight into composeResources/drawable/, and regenerates
@@ -110,7 +114,10 @@ java tools/build-object-images.java
 ```
 
 Real apparent on-sky size and orientation *are* part of this pipeline: `SkyMap.kt` scales each
-photo's longest edge to the object's true angular size at the current zoom and rotates it to true
+photo's longest edge to the photo's own real field of view (`BundledObjectImage.fovDegrees`, wider
+than the object's own catalog size by the fetch step's padding margin — sizing by the object's own
+size instead would draw the photo's real surrounding starfield compressed relative to the
+independently-projected catalog stars around it) at the current zoom, and rotates it to true
 equatorial north using `SkyMapDirectionCache.northOffsetDirections` — no plate-solving needed,
 since each cutout is fetched already north-up (ICRS, `rotation_angle=0`), so its orientation is
 known by construction rather than measured.
@@ -155,6 +162,33 @@ The APK is written to `composeApp/build/outputs/apk/debug/composeApp-debug.apk`.
 > and true end-to-end pointing accuracy. Verification so far is math-first — see the test suite
 > for what each module checks against (published constants, synthetic-rotation recovery, and
 > geometric invariants).
+
+### Cutting a release
+
+Fully manual, no CI — GitHub releases carry a sideloaded APK, not a Play Store listing.
+
+1. Bump `versionCode` (+1) and `versionName` in `composeApp/build.gradle.kts`, commit as
+   "Bump version to X.Y.Z".
+2. Build the signed release APK — needs `keystore/keystore.properties` to exist locally (a
+   gitignored, one-time-setup file; the build silently falls back to unsigned if it's absent, see
+   `composeApp/build.gradle.kts`'s `signingConfigs`):
+   ```bash
+   ./gradlew :composeApp:assembleRelease
+   ```
+   Output: `composeApp/build/outputs/apk/release/composeApp-release.apk`.
+3. Tag and push. `git push --follow-tags` only carries *annotated* tags — this repo's tags
+   (`v1.0.0`, `v1.1.0`, ...) are lightweight, so push the tag explicitly too:
+   ```bash
+   git tag vX.Y.Z
+   git push origin main
+   git push origin vX.Y.Z
+   ```
+4. Publish the GitHub release with the APK attached (see past releases for the notes style):
+   ```bash
+   gh release create vX.Y.Z composeApp/build/outputs/apk/release/composeApp-release.apk \
+     --title "AstroCompass vX.Y.Z" \
+     --notes "..."
+   ```
 
 ---
 
