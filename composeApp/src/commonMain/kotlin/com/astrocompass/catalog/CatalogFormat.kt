@@ -46,6 +46,9 @@ object CatalogFormat {
             val magnitude = reader.readFloat32()
             val constellation = reader.readString()
             val commonName = reader.readString()
+            val majorAxisArcmin = reader.readFloat32()
+            val minorAxisArcmin = reader.readFloat32()
+            val positionAngleDegrees = reader.readFloat32()
             DeepSkyObject(
                 catalogDesignation = name,
                 messier = messier,
@@ -54,6 +57,9 @@ object CatalogFormat {
                 magnitude = magnitude,
                 constellation = constellation,
                 commonName = commonName,
+                majorAxisArcmin = majorAxisArcmin,
+                minorAxisArcmin = minorAxisArcmin,
+                positionAngleDegrees = positionAngleDegrees,
             )
         }
     }

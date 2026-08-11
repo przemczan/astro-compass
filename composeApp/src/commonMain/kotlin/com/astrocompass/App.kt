@@ -12,9 +12,11 @@ import androidx.compose.ui.Modifier
 import com.astrocompass.astro.time.currentEpochMillis
 import com.astrocompass.catalog.SearchCategory
 import com.astrocompass.catalog.SkyObject
+import com.astrocompass.guiding.currentHorizontal
 import com.astrocompass.ui.BackHandler
 import com.astrocompass.ui.screens.AlignmentScreen
 import com.astrocompass.ui.screens.GuidanceScreen
+import com.astrocompass.ui.screens.MapScreen
 import com.astrocompass.ui.screens.SearchScreen
 import com.astrocompass.ui.screens.SettingsScreen
 import com.astrocompass.ui.skymap.SkyMapViewport
@@ -28,15 +30,17 @@ fun GuiderApp(container: AppContainer) {
 
     GuiderTheme(appTheme = resolvedTheme) {
         // Marking a target and guiding on it are independent: selecting a target only marks it
-        // (see SearchScreen's Goto button); isGuiding tracks whether GuidanceScreen is showing.
+        // (see MapScreen's Goto button); isGuiding tracks whether GuidanceScreen is showing.
         var selectedTarget by remember { mutableStateOf<SkyObject?>(null) }
         var isGuiding by remember { mutableStateOf(false) }
         var showAlignment by remember { mutableStateOf(false) }
         var showSettings by remember { mutableStateOf(false) }
+        var showSearch by remember { mutableStateOf(false) }
 
-        // Hoisted here (rather than remembered inside SearchScreen) so the browse map's position,
-        // query, and filter survive trips into Guidance/Alignment/Settings and back -- App.kt's
-        // `when` below tears down whichever screen composable isn't currently selected.
+        // Hoisted here (rather than remembered inside MapScreen/SearchScreen) so the browse map's
+        // position and the search screen's query/filter survive trips into Guidance/Alignment/
+        // Settings/Search and back -- App.kt's `when` below tears down whichever screen composable
+        // isn't currently selected.
         var searchViewport by remember { mutableStateOf(SkyMapViewport.DEFAULT) }
         var searchQuery by remember { mutableStateOf("") }
         var searchCategory by remember { mutableStateOf<SearchCategory?>(null) }
@@ -44,6 +48,7 @@ fun GuiderApp(container: AppContainer) {
         val resolvedLocation by container.locationResolver.resolved.collectAsState()
         val magnitudeLimit by container.preferences.magnitudeLimit.collectAsState()
         val toleranceDegrees by container.preferences.onTargetToleranceDegrees.collectAsState()
+        val showObjectImages by container.preferences.showObjectImages.collectAsState()
 
         val location = resolvedLocation
 
@@ -53,10 +58,11 @@ fun GuiderApp(container: AppContainer) {
             when {
                 showSettings -> showSettings = false
                 showAlignment -> showAlignment = false
+                showSearch -> showSearch = false
                 isGuiding -> isGuiding = false
             }
         }
-        BackHandler(enabled = showSettings || showAlignment || isGuiding, onBack = goBack)
+        BackHandler(enabled = showSettings || showAlignment || showSearch || isGuiding, onBack = goBack)
 
         when {
             showSettings -> SettingsScreen(
@@ -92,10 +98,31 @@ fun GuiderApp(container: AppContainer) {
                 onOpenAlignment = { isGuiding = false; showAlignment = true },
                 onOpenSettings = { showSettings = true },
                 onExitGuiding = { isGuiding = false },
+                showObjectPhotos = showObjectImages,
                 modifier = Modifier.fillMaxSize(),
             )
 
-            else -> SearchScreen(
+            showSearch -> SearchScreen(
+                catalogRepository = container.catalogRepository,
+                magnitudeLimit = magnitudeLimit,
+                query = searchQuery,
+                onQueryChange = { searchQuery = it },
+                category = searchCategory,
+                onCategoryChange = { searchCategory = it },
+                onSelectResult = { target ->
+                    selectedTarget = target
+                    container.preferences.setLastTargetId(target.id)
+                    if (location != null) {
+                        val horizontal = target.currentHorizontal(location, currentEpochMillis())
+                        searchViewport = searchViewport.copy(centerAzimuth = horizontal.azimuth, centerAltitude = horizontal.altitude)
+                    }
+                    showSearch = false
+                },
+                onBack = goBack,
+                modifier = Modifier.fillMaxSize(),
+            )
+
+            else -> MapScreen(
                 catalogRepository = container.catalogRepository,
                 location = location,
                 magnitudeLimit = magnitudeLimit,
@@ -108,10 +135,8 @@ fun GuiderApp(container: AppContainer) {
                 onGoto = { isGuiding = true },
                 viewport = searchViewport,
                 onViewportChange = { searchViewport = it },
-                query = searchQuery,
-                onQueryChange = { searchQuery = it },
-                category = searchCategory,
-                onCategoryChange = { searchCategory = it },
+                showObjectPhotos = showObjectImages,
+                onOpenSearch = { showSearch = true },
                 onOpenSettings = { showSettings = true },
                 onOpenAlignment = { showAlignment = true },
                 modifier = Modifier.fillMaxSize(),

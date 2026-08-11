@@ -6,6 +6,7 @@ import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
@@ -18,6 +19,9 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.rotate
+import androidx.compose.ui.graphics.drawscope.translate
+import androidx.compose.ui.graphics.painter.Painter
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.text.TextMeasurer
@@ -37,9 +41,14 @@ import com.astrocompass.catalog.SkyObject
 import com.astrocompass.catalog.SkyObjectType
 import com.astrocompass.catalog.SolarSystemObject
 import com.astrocompass.catalog.StarObject
+import com.astrocompass.catalog.messierImageDrawable
+import com.astrocompass.ui.skymap.SkyMapDirectionCache
 import com.astrocompass.ui.skymap.SkyMapScene
 import com.astrocompass.ui.skymap.SkyMapViewport
+import kotlin.math.atan2
+import kotlin.math.max
 import kotlin.math.min
+import org.jetbrains.compose.resources.painterResource
 
 /** A direction worth marking on the map beyond the catalog itself -- a Guidance target, the
  *  telescope's current pointing, or an already-confirmed alignment sync point. */
@@ -47,6 +56,15 @@ data class SkyMapMarker(
     val direction: Vector3,
     val color: Color,
     val label: String? = null,
+)
+
+/** A resolved, ready-to-draw bundled photo for one Messier object at the current zoom --
+ *  [rotationDegrees] is the clockwise screen rotation that points the (assumed north-up) photo's
+ *  own "up" at true equatorial north, see [SkyMap]'s `objectPhotos` for the derivation. */
+private data class ObjectPhoto(
+    val painter: Painter,
+    val targetLongestEdgePx: Float,
+    val rotationDegrees: Float,
 )
 
 private val STAR_LABEL_COUNT = 12
@@ -57,6 +75,10 @@ private val MAX_STAR_RADIUS_PX = 7f
  *  always draw at [MAX_STAR_RADIUS_PX] regardless of the (nonexistent) real magnitude clamp. */
 private const val PLANET_DRAW_MAGNITUDE = -10f
 private val DSO_GLYPH_RADIUS_DP = 6.dp
+/** Below this on-screen size a Messier object's bundled photo would just be a smudge -- the dot
+ *  glyph reads better and is cheaper to draw, so the photo only takes over once real apparent
+ *  size at the current zoom earns it. First-pass tuning value, not derived from anything. */
+private const val MIN_PHOTO_DISPLAY_PX = 40f
 private val MARKER_RADIUS_DP = 10.dp
 private val HORIZON_SAMPLE_COUNT = 96
 private const val HORIZON_STROKE_WIDTH = 4f
@@ -88,6 +110,14 @@ fun SkyMap(
     highlightedIds: Set<String> = emptySet(),
     markers: List<SkyMapMarker> = emptyList(),
     constellationLines: List<List<Vector3>> = emptyList(),
+    /** ENU direction of "true equatorial north" for each Messier object with a known position
+     *  angle -- see [SkyMapDirectionCache.northOffsetDirections]'s doc comment for why this needs
+     *  observer location/time despite each object's own orientation being fixed. Objects missing
+     *  from this map (no position angle on file) draw screen-upright rather than unrotated-wrong. */
+    northOffsetDirections: Map<String, Vector3> = emptyMap(),
+    /** Beta feature flag (Settings -> "Object images") -- false skips resolving/drawing photos
+     *  entirely, falling back to the plain dot/glyph for every object. */
+    showObjectPhotos: Boolean = true,
     onSelect: ((SkyObject) -> Unit)? = null,
 ) {
     var canvasSize by remember { mutableStateOf(IntSize.Zero) }
@@ -99,6 +129,45 @@ fun SkyMap(
         SkyMapScene.pixelsPerPlaneUnit(viewport.fieldOfViewDegrees, min(canvasSize.width, canvasSize.height).toFloat())
     }
     val projection = remember(viewport) { SkyMapScene.projectionFor(viewport) }
+
+    // Real photos take over from the dot glyph once an object's actual apparent size at the
+    // current zoom clears MIN_PHOTO_DISPLAY_PX. angularSize * pixelsPerUnit approximates on-screen
+    // size well for something object-sized (the stereographic projection is ~scale-preserving over
+    // that small an angle) without needing per-object trig beyond what's already computed above.
+    // showObjectPhotos short-circuits the whole thing to an empty map rather than filtering the
+    // result, so a disabled toggle costs nothing beyond the flag check itself.
+    val objectPhotos: Map<String, ObjectPhoto> = if (!showObjectPhotos) emptyMap() else buildMap {
+        for (projected in scene) {
+            val obj = projected.skyObject as? DeepSkyObject ?: continue
+            if (obj.messier <= 0 || obj.majorAxisArcmin.isNaN()) continue
+            val majorAxisRadians = Angle.ofDegrees(obj.majorAxisArcmin / 60.0).radians
+            val targetLongestEdgePx = (majorAxisRadians * pixelsPerUnit).toFloat()
+            if (targetLongestEdgePx < MIN_PHOTO_DISPLAY_PX) continue
+            val drawable = messierImageDrawable(obj.messier) ?: continue
+
+            // Rotates the (published-north-up) photo so its own "up" points at true equatorial
+            // north on *this* screen -- see SkyMapDirectionCache.northOffsetDirections' doc
+            // comment for why that needs observer location/time despite the object's own
+            // orientation being fixed. Plane-space deltas double as the screen-space bearing
+            // (from up, clockwise) directly: toScreen's x/y scaling is uniform, so it doesn't
+            // change the angle between two nearby points, only pixelsPerUnit does, and that
+            // cancels out of atan2. Falls back to upright (0°) if north-offset data wasn't
+            // supplied by the caller (SkyMap's default) or projects off the visible sky.
+            // Confirmed on-device to rotate (not just draw upright); exact sign/direction against
+            // an independent reference is still unverified.
+            val rotationDegrees = northOffsetDirections[obj.id]
+                ?.let(projection::project)
+                ?.let { northPoint ->
+                    val dx = northPoint.x - projected.point.x
+                    val dy = northPoint.y - projected.point.y
+                    Angle.ofRadians(atan2(dx, dy)).degrees.toFloat()
+                } ?: 0f
+
+            key(obj.id) {
+                put(obj.id, ObjectPhoto(painterResource(drawable), targetLongestEdgePx, rotationDegrees))
+            }
+        }
+    }
 
     val currentViewport = rememberUpdatedState(viewport)
     val currentOnViewportChange = rememberUpdatedState(onViewportChange)
@@ -187,9 +256,14 @@ fun SkyMap(
         for (projected in scene) {
             val screenPoint = toScreen(projected.point)
             val isHighlighted = highlightedIds.contains(projected.skyObject.id)
+            val photo = objectPhotos[projected.skyObject.id]
             when (val obj = projected.skyObject) {
                 is StarObject -> drawStar(screenPoint, obj.magnitude, starColor, isHighlighted, highlightColor)
-                is DeepSkyObject -> drawDeepSkyObject(screenPoint, obj.type, dsoColor, isHighlighted, highlightColor)
+                is DeepSkyObject -> if (photo != null) {
+                    drawObjectPhoto(screenPoint, photo.painter, photo.targetLongestEdgePx, photo.rotationDegrees)
+                } else {
+                    drawDeepSkyObject(screenPoint, obj.type, dsoColor, isHighlighted, highlightColor)
+                }
                 is SolarSystemObject -> drawStar(screenPoint, PLANET_DRAW_MAGNITUDE, planetColor, isHighlighted, highlightColor)
             }
         }
@@ -364,6 +438,24 @@ private fun DrawScope.drawDeepSkyObject(
                 close()
             }
             drawPath(path, color, style = stroke)
+        }
+    }
+}
+
+/** Draws a bundled object photo centered at [center], its longest edge scaled to
+ *  [targetLongestEdgePx] -- the photo's own aspect ratio is kept as-is (not stretched to the
+ *  catalog's major/minor axis ratio), since the photo's framing rarely matches that ratio exactly
+ *  and stretching would visibly distort it -- then rotated clockwise by [rotationDegrees] about
+ *  its own center to align with true north on screen. */
+private fun DrawScope.drawObjectPhoto(center: Offset, painter: Painter, targetLongestEdgePx: Float, rotationDegrees: Float) {
+    val intrinsic = painter.intrinsicSize
+    if (intrinsic.width <= 0f || intrinsic.height <= 0f) return
+    val scale = targetLongestEdgePx / max(intrinsic.width, intrinsic.height)
+    val drawWidth = intrinsic.width * scale
+    val drawHeight = intrinsic.height * scale
+    rotate(rotationDegrees, pivot = center) {
+        translate(left = center.x - drawWidth / 2f, top = center.y - drawHeight / 2f) {
+            with(painter) { draw(Size(drawWidth, drawHeight)) }
         }
     }
 }

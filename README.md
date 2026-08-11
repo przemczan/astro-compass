@@ -80,6 +80,36 @@ node tools/build-catalogs.mjs
 The script fetches fresh source CSVs from GitHub; only its `.bin` output is committed, so the
 app's own build never touches the network.
 
+### Deep-sky object photos
+
+Bundled as `composeResources/drawable/m<N>.jpg` (one per Messier object, `M1`-`M110` minus
+`M102`), looked up from `DeepSkyObject.messier` via `catalog/MessierImages.kt`. Preparing these is
+a 3-step, manually-run offline pipeline — like the catalog blobs, only the final `.jpg`s are
+committed, so the app's own build never touches the network:
+
+```bash
+# 1. Download a lead photo + license metadata per object into tools/image-staging/ (gitignored).
+#    NASA's public image library (images-api.nasa.gov) is tried first -- unambiguous public
+#    domain, but only confidently matches ~half the catalog by Messier number -- falling back to
+#    Wikipedia/Wikimedia Commons for the rest. Resumable: re-running skips objects already staged,
+#    and tools/image-staging/manifest.json records each pick's source/artist/license for review.
+node tools/fetch-object-images.mjs
+
+# 2. Review tools/image-staging/ (see manifest.json) and remove/replace any picks that aren't
+#    representative -- NASA's keyword search can surface real but misleading results (e.g. an
+#    extreme-crop false-color infrared image for what should read as a normal-looking photo).
+
+# 3. Resize to a 1024px-longest-edge JPEG, matted to black (some sources are transparent PNGs).
+#    Plain JDK, no build step needed -- run as a single-file source program.
+java tools/resize-object-images.java tools/image-staging
+```
+
+Then copy the approved files from `tools/image-staging/resized/` into
+`composeApp/src/commonMain/composeResources/drawable/` (already lowercase `mN.jpg`, matching
+Compose's resource-naming rules) and add any newly-covered numbers to `messierImageDrawable()` in
+`MessierImages.kt`. Real apparent on-sky size/orientation and background blending are not part of
+this pipeline yet — bundled photos are shown at a fixed presentation size, not plate-solved.
+
 ### Key libraries
 
 | Library | Purpose |

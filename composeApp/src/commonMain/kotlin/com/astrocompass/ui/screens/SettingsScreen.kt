@@ -11,6 +11,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.LocalCafe
 import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.DropdownMenu
@@ -36,6 +37,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.unit.dp
 import com.astrocompass.astro.Angle
 import com.astrocompass.guiding.CameraMounting
@@ -45,6 +47,8 @@ import com.astrocompass.sensors.OrientationSensor
 import com.astrocompass.sensors.SensorSource
 import com.astrocompass.settings.AppPreferences
 import com.astrocompass.ui.theme.AppTheme
+
+private const val BUY_ME_A_COFFEE_URL = "https://buymeacoffee.com/przemczan"
 
 @Composable
 fun SettingsScreen(
@@ -68,6 +72,9 @@ fun SettingsScreen(
         Column(
             Modifier.padding(padding).verticalScroll(rememberScrollState()).padding(16.dp),
         ) {
+            DonationSection()
+
+            HorizontalDivider(Modifier.padding(vertical = 16.dp))
             SectionTitle("Location")
             LocationSection(preferences, resolvedLocation)
 
@@ -88,6 +95,10 @@ fun SettingsScreen(
             ThemeSection(preferences)
 
             HorizontalDivider(Modifier.padding(vertical = 16.dp))
+            SectionTitle("Object images (Beta)")
+            ObjectImagesSection(preferences)
+
+            HorizontalDivider(Modifier.padding(vertical = 16.dp))
             SectionTitle("Data sources & licenses")
             Text(
                 "Stars: HYG Database (Astronomy Nexus / David Nash), CC BY-SA 4.0.\n" +
@@ -99,6 +110,17 @@ fun SettingsScreen(
             HorizontalDivider(Modifier.padding(vertical = 16.dp))
             SectionTitle("Advanced")
             AdvancedSection(preferences, orientationSensor)
+        }
+    }
+}
+
+@Composable
+private fun DonationSection() {
+    val uriHandler = LocalUriHandler.current
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
+        Button(onClick = { uriHandler.openUri(BUY_ME_A_COFFEE_URL) }) {
+            Icon(Icons.Default.LocalCafe, contentDescription = null, modifier = Modifier.padding(end = 8.dp))
+            Text("Buy me a coffee")
         }
     }
 }
@@ -213,6 +235,22 @@ private fun ThemeSection(preferences: AppPreferences) {
             )
         }
     }
+}
+
+@Composable
+private fun ObjectImagesSection(preferences: AppPreferences) {
+    val current by preferences.showObjectImages.collectAsState()
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Checkbox(checked = current, onCheckedChange = { preferences.setShowObjectImages(it) })
+        Text("Show real photos for deep-sky objects on the map", style = MaterialTheme.typography.bodyMedium)
+    }
+    Text(
+        "Replaces an object's dot with its bundled photo once zoomed in enough. Sourcing and " +
+            "orientation are still rough for some objects -- turn this off if it's more distracting " +
+            "than useful.",
+        style = MaterialTheme.typography.bodySmall,
+        modifier = Modifier.padding(top = 4.dp),
+    )
 }
 
 @Composable

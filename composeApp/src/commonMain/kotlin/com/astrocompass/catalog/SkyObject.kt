@@ -56,6 +56,18 @@ data class DeepSkyObject(
     override val magnitude: Float,
     val constellation: String,
     val commonName: String,
+    /** Apparent long axis in arcminutes, or [Float.NaN] if OpenNGC has no size measurement for
+     *  this object -- same "unknown" convention as [magnitude]. */
+    val majorAxisArcmin: Float = Float.NaN,
+    /** Apparent short axis in arcminutes, or [Float.NaN] if unmeasured -- notably common even when
+     *  [majorAxisArcmin] is known (e.g. small/round objects), not just when the whole object is
+     *  unmeasured. Callers that need a size for a circular fallback should treat NaN here as
+     *  "same as [majorAxisArcmin]", not as "no size at all". */
+    val minorAxisArcmin: Float = Float.NaN,
+    /** Position angle in degrees, measured east of north -- how [majorAxisArcmin] is rotated
+     *  relative to true north at this object's location. [Float.NaN] if unmeasured (common for
+     *  round objects, where orientation has no visible meaning anyway). */
+    val positionAngleDegrees: Float = Float.NaN,
 ) : SkyObject {
     override val id: String = catalogDesignation
     override val searchCategory = type.searchCategory()

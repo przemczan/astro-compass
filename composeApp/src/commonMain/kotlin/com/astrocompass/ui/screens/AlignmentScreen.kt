@@ -80,7 +80,7 @@ fun AlignmentScreen(
     var starCount by remember { mutableStateOf(2) }
     var points by remember { mutableStateOf(listOf<AlignmentPoint>()) }
     var pendingTarget by remember { mutableStateOf<StarObject?>(null) }
-    var mapMode by remember { mutableStateOf(false) }
+    var mapMode by remember { mutableStateOf(true) }
     var sortMode by remember { mutableStateOf(StarSortMode.MAGNITUDE) }
     var viewport by remember { mutableStateOf(SkyMapViewport.DEFAULT) }
 

@@ -196,6 +196,14 @@ async function buildDeepSky() {
 
       const messierStr = r[idx.M];
 
+      // Apparent size/orientation on the sky -- MajAx/MinAx in arcmin, PosAng in degrees east of
+      // north. Many objects (especially round or small ones) carry no MinAx/PosAng at all; NaN is
+      // the sentinel here too, same convention as `mag` above -- interpretation (e.g. "no MinAx
+      // means circular") lives in the Kotlin decode side, not baked into the stored bytes.
+      const majAxisArcmin = parseFloat(r[idx.MajAx]);
+      const minAxisArcmin = parseFloat(r[idx.MinAx]);
+      const positionAngleDegrees = parseFloat(r[idx.PosAng]);
+
       objects.push({
         name: r[idx.Name],
         type: NGC_TYPE_TO_ORDINAL[type] ?? NGC_TYPE_TO_ORDINAL['Other'],
@@ -205,6 +213,9 @@ async function buildDeepSky() {
         constellation: r[idx.Const] || '',
         commonName: (r[idx['Common names']] || '').split(',')[0].trim(),
         messier: messierStr ? parseInt(messierStr, 10) : 0,
+        majAxisArcmin,
+        minAxisArcmin,
+        positionAngleDegrees,
       });
     }
   }
@@ -220,6 +231,9 @@ async function buildDeepSky() {
     w.float32(o.mag);
     w.string(o.constellation);
     w.string(o.commonName);
+    w.float32(o.majAxisArcmin);
+    w.float32(o.minAxisArcmin);
+    w.float32(o.positionAngleDegrees);
   }
   mkdirSync(OUT_DIR, { recursive: true });
   writeFileSync(join(OUT_DIR, 'dso.bin'), w.toBuffer());

@@ -19,3 +19,4 @@ captures
 node_modules/
 .claude
 /keystore/
+/tools/image-staging/

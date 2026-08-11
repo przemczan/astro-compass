@@ -91,6 +91,15 @@ class AppPreferences(private val settings: Settings) {
         if (id == null) settings.remove(KEY_LAST_TARGET) else settings.putString(KEY_LAST_TARGET, id)
     }
 
+    /** Beta: swaps a Messier object's sky-map dot for its bundled photo once zoomed in enough --
+     *  see [com.astrocompass.ui.components.SkyMap]'s `objectPhotos`. Defaults on; the setting
+     *  exists as an escape hatch since sourcing/orientation on the bundled photos is still rough. */
+    val showObjectImages = MutableStateFlow(settings.getBoolean(KEY_SHOW_OBJECT_IMAGES, true))
+    fun setShowObjectImages(show: Boolean) {
+        showObjectImages.value = show
+        settings.putBoolean(KEY_SHOW_OBJECT_IMAGES, show)
+    }
+
     private companion object {
         const val KEY_TELESCOPE_AXIS = "telescope_axis"
         const val KEY_TOLERANCE = "on_target_tolerance_degrees"
@@ -102,6 +111,7 @@ class AppPreferences(private val settings: Settings) {
         const val KEY_MANUAL_LON = "manual_lon"
         const val KEY_MANUAL_ELEVATION = "manual_elevation"
         const val KEY_LAST_TARGET = "last_target_id"
+        const val KEY_SHOW_OBJECT_IMAGES = "show_object_images"
 
         const val DEFAULT_TOLERANCE_DEGREES = 0.5
         const val DEFAULT_MAGNITUDE_LIMIT = 13f

@@ -49,6 +49,7 @@ import androidx.compose.ui.window.Dialog
 import com.astrocompass.astro.coords.HorizontalCoordinates
 import com.astrocompass.astro.time.currentEpochMillis
 import com.astrocompass.catalog.CatalogRepository
+import com.astrocompass.catalog.DeepSkyObject
 import com.astrocompass.catalog.SkyObject
 import com.astrocompass.guiding.AbsoluteReferenceState
 import com.astrocompass.guiding.GuidanceCalculator
@@ -108,6 +109,7 @@ fun GuidanceScreen(
     onOpenAlignment: () -> Unit,
     onOpenSettings: () -> Unit,
     onExitGuiding: () -> Unit,
+    showObjectPhotos: Boolean,
     modifier: Modifier = Modifier,
 ) {
     val isAligned by pointingService.isAligned.collectAsState()
@@ -138,6 +140,13 @@ fun GuidanceScreen(
     }
     val mapConstellationLines = remember(catalogLoaded, mapNow) {
         if (catalogLoaded) SkyMapDirectionCache.buildConstellationDirections(catalogRepository.constellationLines, location, mapNow) else emptyList()
+    }
+    val mapNorthOffsets = remember(catalogLoaded, mapNow) {
+        if (catalogLoaded) {
+            SkyMapDirectionCache.northOffsetDirections(catalogRepository.all.filterIsInstance<DeepSkyObject>(), location, mapNow)
+        } else {
+            emptyMap()
+        }
     }
 
     var mapViewport by remember { mutableStateOf(SkyMapViewport.DEFAULT) }
@@ -244,6 +253,8 @@ fun GuidanceScreen(
                     onViewportChange = { mapViewport = it },
                     onManualInteraction = { followPointing = false },
                     constellationLines = mapConstellationLines,
+                    northOffsetDirections = mapNorthOffsets,
+                    showObjectPhotos = showObjectPhotos,
                     markers = listOf(
                         SkyMapMarker(direction = targetDirection, color = MaterialTheme.colorScheme.primary, label = target.displayName),
                         SkyMapMarker(direction = currentPointing!!, color = if (guidance.isOnTarget) OnTargetGreen else MaterialTheme.colorScheme.secondary),
