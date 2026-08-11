@@ -5,9 +5,11 @@ import com.astrocompass.astro.Vector3
 import com.astrocompass.astro.coords.HorizontalCoordinates
 import com.astrocompass.astro.projection.PlanePoint
 import com.astrocompass.astro.projection.StereographicProjection
+import com.astrocompass.catalog.DeepSkyObject
 import com.astrocompass.catalog.SkyObject
 import com.astrocompass.catalog.SolarSystemObject
 import com.astrocompass.catalog.StarObject
+import com.astrocompass.catalog.objectImage
 import kotlin.math.PI
 import kotlin.math.atan
 import kotlin.math.cos
@@ -47,6 +49,20 @@ private const val SOLAR_SYSTEM_BODY_SENTINEL = -10f
  *  a band instead of vanishing outright the instant field of view crosses its threshold -- see
  *  [ProjectedObject.alpha]. */
 private const val FADE_MAGNITUDE_RANGE = 1.0f
+
+/** Worst-case field of view (degrees) any bundled object photo can have -- mirrors
+ *  tools/fetch-object-images.mjs's MAX_FOV_DEGREES, kept in lockstep by convention rather than a
+ *  shared constant (same relationship as the catalog binary format's field layout). A photo can be
+ *  hundreds of pixels across, so its *center* point crossing the culled viewport edge doesn't mean
+ *  the photo itself has left the screen -- [build] widens the cull bounds for a [DeepSkyObject]
+ *  with a bundled photo by that photo's own real half-extent (see the per-object check below)
+ *  rather than dropping it the instant its center does, and this constant only bounds how far the
+ *  *cheap* cone pre-filter has to look before that precise per-object check runs. */
+private const val MAX_PHOTO_FOV_DEGREES = 5.0
+
+/** A photo's bounding box grows by up to this factor over its own half-extent when rotated
+ *  (worst case at 45 degrees) -- see [build]'s cull-margin uses of it. */
+private val SQRT_2 = sqrt(2.0)
 
 /** One catalog object placed on the map: its projected plane position plus the ENU direction it
  *  came from (kept for markers/hit-testing that need the direction, not just the pixel spot). */
@@ -113,8 +129,14 @@ object SkyMapScene {
         // relation) rather than a flat degree margin -- a fixed margin would need re-tuning every
         // time VIEWPORT_BOUNDS_MARGIN or the canvas's aspect ratio changed, and silently under-cull
         // (dropping objects the exact rectangular check below would otherwise have kept) if it
-        // ever fell behind either.
-        val cornerPlaneRadius = sqrt(halfWidthUnits * halfWidthUnits + halfHeightUnits * halfHeightUnits)
+        // ever fell behind either. Widened by MAX_PHOTO_FOV_DEGREES's worst case (times sqrt(2) for
+        // a photo rotated up to 45 degrees) so this cheap pre-filter can never reject something the
+        // precise per-object check below would still have kept.
+        val maxPhotoHalfExtentPlaneUnits = Angle.ofDegrees(MAX_PHOTO_FOV_DEGREES / 2.0).radians * SQRT_2
+        val cornerPlaneRadius = sqrt(
+            (halfWidthUnits + maxPhotoHalfExtentPlaneUnits) * (halfWidthUnits + maxPhotoHalfExtentPlaneUnits) +
+                (halfHeightUnits + maxPhotoHalfExtentPlaneUnits) * (halfHeightUnits + maxPhotoHalfExtentPlaneUnits),
+        )
         val cullHalfAngleRadians = (2.0 * atan(cornerPlaneRadius / 2.0)).coerceAtMost(PI - 0.01)
         val cullCosine = cos(cullHalfAngleRadians)
 
@@ -123,8 +145,20 @@ object SkyMapScene {
             .filter { (_, direction) -> (direction dot center) >= cullCosine }
             .mapNotNull { (obj, direction) ->
                 val point = projection.project(direction) ?: return@mapNotNull null
-                if (point.x < -halfWidthUnits || point.x > halfWidthUnits ||
-                    point.y < -halfHeightUnits || point.y > halfHeightUnits
+                // A DSO's bundled photo can be hundreds of pixels across, so its *center* leaving
+                // the viewport doesn't mean the photo has -- widen the bounds check by the photo's
+                // own real half-extent (again times sqrt(2) for worst-case rotation) rather than
+                // dropping it the instant the center does. SkyMap's Canvas clips the true edge
+                // (see VIEWPORT_BOUNDS_MARGIN's doc comment), so over-including here just means a
+                // few extra draw calls clipped away, not visible overdraw.
+                val photoHalfExtentPlaneUnits = (obj as? DeepSkyObject)
+                    ?.let { objectImage(it.id) }
+                    ?.let { Angle.ofDegrees(it.fovDegrees.toDouble() / 2.0).radians * SQRT_2 }
+                    ?: 0.0
+                val effectiveHalfWidth = halfWidthUnits + photoHalfExtentPlaneUnits
+                val effectiveHalfHeight = halfHeightUnits + photoHalfExtentPlaneUnits
+                if (point.x < -effectiveHalfWidth || point.x > effectiveHalfWidth ||
+                    point.y < -effectiveHalfHeight || point.y > effectiveHalfHeight
                 ) {
                     null
                 } else {

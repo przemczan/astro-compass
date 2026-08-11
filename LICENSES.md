@@ -27,6 +27,18 @@ data remains under its original license and must be credited on redistribution.
 - File used: `data/constellations.lines.json`
 - License: BSD-3-Clause
 
+## Deep-sky object photos — Digitized Sky Survey (DSS2) via CDS hips2fits
+
+- Source: [CDS hips2fits](https://alasky.u-strasbg.fr/hips-image-services/hips2fits), survey
+  `CDS/P/DSS2/color`
+- Credit: Digitized Sky Survey, Space Telescope Science Institute (STScI) / Anglo-Australian
+  Observatory / UK Schmidt Telescope (AAO-UKST)
+- Files used: `composeApp/src/commonMain/composeResources/drawable/<id>.jpg`, one per bundled
+  object, fetched by `tools/fetch-object-images.mjs`
+- License/usage terms: [archive.stsci.edu/dss/copyright.html](https://archive.stsci.edu/dss/copyright.html)
+  — **restricts commercial use**; confirm compatibility with distribution before shipping a build
+  that includes these photos
+
 ## Solar system
 
 Sun, Moon, and planet positions are computed at runtime from published orbital theory

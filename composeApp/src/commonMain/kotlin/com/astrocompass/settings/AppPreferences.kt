@@ -92,7 +92,7 @@ class AppPreferences(private val settings: Settings) {
         if (id == null) settings.remove(KEY_LAST_TARGET) else settings.putString(KEY_LAST_TARGET, id)
     }
 
-    /** Beta: swaps a Messier object's sky-map dot for its bundled photo once zoomed in enough --
+    /** Beta: swaps an object's sky-map dot for its bundled photo once zoomed in enough --
      *  see [com.astrocompass.ui.components.SkyMap]'s `objectPhotos`. Defaults on; the setting
      *  exists as an escape hatch since sourcing/orientation on the bundled photos is still rough. */
     val showObjectImages = MutableStateFlow(settings.getBoolean(KEY_SHOW_OBJECT_IMAGES, true))

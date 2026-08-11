@@ -82,33 +82,38 @@ app's own build never touches the network.
 
 ### Deep-sky object photos
 
-Bundled as `composeResources/drawable/m<N>.jpg` (one per Messier object, `M1`-`M110` minus
-`M102`), looked up from `DeepSkyObject.messier` via `catalog/MessierImages.kt`. Preparing these is
-a 3-step, manually-run offline pipeline — like the catalog blobs, only the final `.jpg`s are
-committed, so the app's own build never touches the network:
+Bundled as `composeResources/drawable/<id>.jpg` (one per object with a photo, filename = its
+`DeepSkyObject.catalogDesignation`/`id` lowercased, e.g. `ngc0224.jpg`), looked up via
+`objectImageDrawable()` in `catalog/ObjectImages.kt`. Preparing these is a 2-step, manually-run
+offline pipeline — like the catalog blobs, only the final `.jpg`s and generated Kotlin file are
+committed, so the app's own build never touches the network. The two steps are deliberately
+separate scripts, so a staged image can be manually swapped out and picked up by a rebuild without
+re-fetching everything:
 
 ```bash
-# 1. Download a lead photo + license metadata per object into tools/image-staging/ (gitignored).
-#    NASA's public image library (images-api.nasa.gov) is tried first -- unambiguous public
-#    domain, but only confidently matches ~half the catalog by Messier number -- falling back to
-#    Wikipedia/Wikimedia Commons for the rest. Resumable: re-running skips objects already staged,
-#    and tools/image-staging/manifest.json records each pick's source/artist/license for review.
-node tools/fetch-object-images.mjs
+# 1. Download (network). Fetches a CDS hips2fits cutout (DSS2/color survey) for every OpenNGC
+#    object at or brighter than a magnitude limit, centered/sized off that object's own RA/Dec and
+#    major axis -- same selection rule build-catalogs.mjs uses for dso.bin, so this always matches
+#    what the app can actually display. Staged into tools/image-staging-hips2fits/ (gitignored);
+#    tools/image-staging-hips2fits/manifest.json records each fetch's source/FOV/license for
+#    review. Resumable: an id whose staged file already exists is left untouched (also how manual
+#    replacement works -- overwrite the file, rerun, it's skipped) -- delete a staged file to force
+#    a genuine re-fetch.
+node tools/fetch-object-images.mjs --mag-limit 11
 
-# 2. Review tools/image-staging/ (see manifest.json) and remove/replace any picks that aren't
-#    representative -- NASA's keyword search can surface real but misleading results (e.g. an
-#    extreme-crop false-color infrared image for what should read as a normal-looking photo).
-
-# 3. Resize to a 1024px-longest-edge JPEG, matted to black (some sources are transparent PNGs).
-#    Plain JDK, no build step needed -- run as a single-file source program.
-java tools/resize-object-images.java tools/image-staging
+# 2. Build (offline). Resizes every staged, currently-manifested image to a configurable
+#    longest-edge JPEG, writes it straight into composeResources/drawable/, and regenerates
+#    catalog/ObjectImages.kt's id -> DrawableResource lookup to match. Plain JDK, no build step
+#    needed -- run as a single-file source program. Safe to rerun any time (e.g. after manually
+#    replacing a staged image, or to bundle at a different size).
+java tools/build-object-images.java
 ```
 
-Then copy the approved files from `tools/image-staging/resized/` into
-`composeApp/src/commonMain/composeResources/drawable/` (already lowercase `mN.jpg`, matching
-Compose's resource-naming rules) and add any newly-covered numbers to `messierImageDrawable()` in
-`MessierImages.kt`. Real apparent on-sky size/orientation and background blending are not part of
-this pipeline yet — bundled photos are shown at a fixed presentation size, not plate-solved.
+Real apparent on-sky size and orientation *are* part of this pipeline: `SkyMap.kt` scales each
+photo's longest edge to the object's true angular size at the current zoom and rotates it to true
+equatorial north using `SkyMapDirectionCache.northOffsetDirections` — no plate-solving needed,
+since each cutout is fetched already north-up (ICRS, `rotation_angle=0`), so its orientation is
+known by construction rather than measured.
 
 ### Key libraries
 

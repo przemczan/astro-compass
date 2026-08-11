@@ -11,6 +11,7 @@ import com.astrocompass.catalog.ConstellationLine
 import com.astrocompass.catalog.DeepSkyObject
 import com.astrocompass.catalog.SkyObject
 import com.astrocompass.catalog.SolarSystemObject
+import com.astrocompass.catalog.objectImage
 import com.astrocompass.location.ObserverLocation
 
 /** Small enough that "a point this far north" is indistinguishable from the object's own position
@@ -72,10 +73,10 @@ object SkyMapDirectionCache {
     }
 
     /**
-     * ENU direction of a point [NORTH_OFFSET] north (in J2000 declination) of each Messier-numbered
-     * object -- lets the sky map find which way *true equatorial north* points on *this* screen,
-     * so a bundled photo (published north-up, the standard astrophotography convention) can be
-     * rotated to match it. Deliberately does **not** apply [DeepSkyObject.positionAngleDegrees]:
+     * ENU direction of a point [NORTH_OFFSET] north (in J2000 declination) of each object that has
+     * a bundled photo -- lets the sky map find which way *true equatorial north* points on *this*
+     * screen, so a bundled photo (published north-up, the standard astrophotography convention) can
+     * be rotated to match it. Deliberately does **not** apply [DeepSkyObject.positionAngleDegrees]:
      * that's the object's tilt *relative to north in its own photo*, which a north-up photo's
      * pixels already show correctly on their own -- applying it again on top would rotate twice.
      * [positionAngleDegrees] instead exists for a schematic (non-photo) glyph, which today's dot
@@ -97,7 +98,7 @@ object SkyMapDirectionCache {
         val j2000ToEnu = enuMatrixFor(location, julianDay) * Precession.rotationJ2000ToDate(julianCenturies)
 
         return catalog.asSequence()
-            .filter { it.messier > 0 }
+            .filter { objectImage(it.id) != null }
             .associate { obj ->
                 val nudged = EquatorialCoordinates(obj.j2000.rightAscension, obj.j2000.declination + NORTH_OFFSET)
                 obj.id to (j2000ToEnu * nudged.toUnitVector())

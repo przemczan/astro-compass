@@ -13,16 +13,19 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.Paint
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.drawscope.translate
-import androidx.compose.ui.graphics.painter.Painter
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.text.TextMeasurer
@@ -42,14 +45,15 @@ import com.astrocompass.catalog.SkyObject
 import com.astrocompass.catalog.SkyObjectType
 import com.astrocompass.catalog.SolarSystemObject
 import com.astrocompass.catalog.StarObject
-import com.astrocompass.catalog.messierImageDrawable
+import com.astrocompass.catalog.objectImage
 import com.astrocompass.ui.skymap.SkyMapDirectionCache
 import com.astrocompass.ui.skymap.SkyMapScene
 import com.astrocompass.ui.skymap.SkyMapViewport
 import kotlin.math.atan2
 import kotlin.math.max
 import kotlin.math.min
-import org.jetbrains.compose.resources.painterResource
+import kotlin.math.roundToInt
+import org.jetbrains.compose.resources.imageResource
 
 /** A direction worth marking on the map beyond the catalog itself -- a Guidance target, the
  *  telescope's current pointing, or an already-confirmed alignment sync point. */
@@ -59,11 +63,11 @@ data class SkyMapMarker(
     val label: String? = null,
 )
 
-/** A resolved, ready-to-draw bundled photo for one Messier object at the current zoom --
+/** A resolved, ready-to-draw bundled photo for one object at the current zoom --
  *  [rotationDegrees] is the clockwise screen rotation that points the (assumed north-up) photo's
  *  own "up" at true equatorial north, see [SkyMap]'s `objectPhotos` for the derivation. */
 private data class ObjectPhoto(
-    val painter: Painter,
+    val image: ImageBitmap,
     val targetLongestEdgePx: Float,
     val rotationDegrees: Float,
 )
@@ -101,7 +105,7 @@ private const val PLANET_DRAW_MAGNITUDE = -10f
  *  Stars are unaffected; this only scales the always-maxed-out planet/Sun/Moon case. */
 private const val SOLAR_SYSTEM_SIZE_MULTIPLIER = 0.5f
 private val DSO_GLYPH_RADIUS_DP = 6.dp
-/** Below this on-screen size a Messier object's bundled photo would just be a smudge -- the dot
+/** Below this on-screen size an object's bundled photo would just be a smudge -- the dot
  *  glyph reads better and is cheaper to draw, so the photo only takes over once real apparent
  *  size at the current zoom earns it. First-pass tuning value, not derived from anything. */
 private const val MIN_PHOTO_DISPLAY_PX = 40f
@@ -151,10 +155,10 @@ fun SkyMap(
     highlightedIds: Set<String> = emptySet(),
     markers: List<SkyMapMarker> = emptyList(),
     constellationLines: List<List<Vector3>> = emptyList(),
-    /** ENU direction of "true equatorial north" for each Messier object with a known position
-     *  angle -- see [SkyMapDirectionCache.northOffsetDirections]'s doc comment for why this needs
-     *  observer location/time despite each object's own orientation being fixed. Objects missing
-     *  from this map (no position angle on file) draw screen-upright rather than unrotated-wrong. */
+    /** ENU direction of "true equatorial north" for each object that has a bundled photo -- see
+     *  [SkyMapDirectionCache.northOffsetDirections]'s doc comment for why this needs observer
+     *  location/time despite each object's own orientation being fixed. Objects missing from this
+     *  map draw screen-upright rather than unrotated-wrong. */
     northOffsetDirections: Map<String, Vector3> = emptyMap(),
     /** Beta feature flag (Settings -> "Object images") -- false skips resolving/drawing photos
      *  entirely, falling back to the plain dot/glyph for every object. */
@@ -171,20 +175,24 @@ fun SkyMap(
     }
     val projection = remember(viewport) { SkyMapScene.projectionFor(viewport) }
 
-    // Real photos take over from the dot glyph once an object's actual apparent size at the
-    // current zoom clears MIN_PHOTO_DISPLAY_PX. angularSize * pixelsPerUnit approximates on-screen
-    // size well for something object-sized (the stereographic projection is ~scale-preserving over
-    // that small an angle) without needing per-object trig beyond what's already computed above.
-    // showObjectPhotos short-circuits the whole thing to an empty map rather than filtering the
-    // result, so a disabled toggle costs nothing beyond the flag check itself.
+    // Real photos take over from the dot glyph once the photo's own apparent size at the current
+    // zoom clears MIN_PHOTO_DISPLAY_PX. Sized by the photo's own fovDegrees (the real angular field
+    // it depicts), not the object's majorAxisArcmin -- a bundled photo includes real surrounding
+    // starfield padded beyond the object's own size (see BundledObjectImage's doc comment), so
+    // scaling it as if its content were exactly object-sized would compress that real starfield
+    // to the wrong on-screen scale relative to the independently-projected catalog stars around
+    // it. angularSize * pixelsPerUnit approximates on-screen size well for something this small
+    // (the stereographic projection is ~scale-preserving over that small an angle) without needing
+    // per-object trig beyond what's already computed above. showObjectPhotos short-circuits the
+    // whole thing to an empty map rather than filtering the result, so a disabled toggle costs
+    // nothing beyond the flag check itself.
     val objectPhotos: Map<String, ObjectPhoto> = if (!showObjectPhotos) emptyMap() else buildMap {
         for (projected in scene) {
             val obj = projected.skyObject as? DeepSkyObject ?: continue
-            if (obj.messier <= 0 || obj.majorAxisArcmin.isNaN()) continue
-            val majorAxisRadians = Angle.ofDegrees(obj.majorAxisArcmin / 60.0).radians
-            val targetLongestEdgePx = (majorAxisRadians * pixelsPerUnit).toFloat()
+            val bundledImage = objectImage(obj.id) ?: continue
+            val fovRadians = Angle.ofDegrees(bundledImage.fovDegrees.toDouble()).radians
+            val targetLongestEdgePx = (fovRadians * pixelsPerUnit).toFloat()
             if (targetLongestEdgePx < MIN_PHOTO_DISPLAY_PX) continue
-            val drawable = messierImageDrawable(obj.messier) ?: continue
 
             // Rotates the (published-north-up) photo so its own "up" points at true equatorial
             // north on *this* screen -- see SkyMapDirectionCache.northOffsetDirections' doc
@@ -205,7 +213,7 @@ fun SkyMap(
                 } ?: 0f
 
             key(obj.id) {
-                put(obj.id, ObjectPhoto(painterResource(drawable), targetLongestEdgePx, rotationDegrees))
+                put(obj.id, ObjectPhoto(imageResource(bundledImage.drawable), targetLongestEdgePx, rotationDegrees))
             }
         }
     }
@@ -312,7 +320,7 @@ fun SkyMap(
             when (val obj = projected.skyObject) {
                 is StarObject -> drawStar(screenPoint, obj.magnitude, starColor, currentStarMagnitudeLimit, projected.alpha, isHighlighted, highlightColor)
                 is DeepSkyObject -> if (photo != null) {
-                    drawObjectPhoto(screenPoint, photo.painter, photo.targetLongestEdgePx, photo.rotationDegrees, projected.alpha)
+                    drawObjectPhoto(screenPoint, photo.image, photo.targetLongestEdgePx, photo.rotationDegrees, projected.alpha)
                     visibleDsoIds += obj.id
                 } else {
                     val apparentRadiusPx = obj.apparentRadiusPx(pixelsPerUnit)
@@ -590,20 +598,87 @@ private fun DrawScope.drawDeepSkyObject(
     return true
 }
 
+/** Fully opaque out to this fraction of each axis's own half-extent, then fades to transparent by
+ *  [PHOTO_FADE_END_FRACTION] -- expressed per-axis (see [drawObjectPhoto]'s fade), not as a
+ *  fraction of the frame's diagonal, so it lines up with the object's own edge consistently
+ *  regardless of the frame's aspect ratio: fetch-object-images.mjs pads *each* axis by the same
+ *  FOV_MARGIN_FACTOR (1.4x) independently, so the object's own edge always sits at very close to
+ *  1/1.4 =~ 0.71 of the frame's half-extent along any given axis, elongated or not. Started just
+ *  past that so the fade never eats into the object itself, only the padding/context starfield
+ *  around it. */
+private const val PHOTO_FADE_START_FRACTION = 0.85f
+
+/** Fully transparent by this fraction of each axis's own half-extent -- short of 1f so there's a
+ *  comfortable margin of guaranteed-transparent padding before the frame's actual edge, not just a
+ *  single fully-transparent pixel row right at the boundary. */
+private const val PHOTO_FADE_END_FRACTION = 0.95f
+
+/** The symmetric opaque-middle/transparent-edges fade profile [drawObjectPhoto] applies along
+ *  each axis independently, as fractions of the *full* [0, axis length] span (mirroring
+ *  [PHOTO_FADE_START_FRACTION]/[PHOTO_FADE_END_FRACTION], which are expressed relative to the
+ *  center, onto both ends of that span) -- shared by the horizontal and vertical mask so both
+ *  read from the same profile rather than two hand-duplicated stop lists. */
+private val PHOTO_FADE_AXIS_STOPS: Array<Pair<Float, Color>> = run {
+    val innerStop = 0.5f * (1f - PHOTO_FADE_START_FRACTION)
+    val outerStop = 0.5f * (1f - PHOTO_FADE_END_FRACTION)
+    arrayOf(
+        outerStop to Color.Transparent,
+        innerStop to Color.White,
+        (1f - innerStop) to Color.White,
+        (1f - outerStop) to Color.Transparent,
+    )
+}
+
 /** Draws a bundled object photo centered at [center], its longest edge scaled to
  *  [targetLongestEdgePx] -- the photo's own aspect ratio is kept as-is (not stretched to the
  *  catalog's major/minor axis ratio), since the photo's framing rarely matches that ratio exactly
  *  and stretching would visibly distort it -- then rotated clockwise by [rotationDegrees] about
- *  its own center to align with true north on screen. */
-private fun DrawScope.drawObjectPhoto(center: Offset, painter: Painter, targetLongestEdgePx: Float, rotationDegrees: Float, alpha: Float) {
-    val intrinsic = painter.intrinsicSize
-    if (intrinsic.width <= 0f || intrinsic.height <= 0f) return
-    val scale = targetLongestEdgePx / max(intrinsic.width, intrinsic.height)
-    val drawWidth = intrinsic.width * scale
-    val drawHeight = intrinsic.height * scale
+ *  its own center to align with true north on screen.
+ *
+ *  Composited with [BlendMode.Screen] rather than plain alpha: every bundled photo is matted to
+ *  solid black (see `tools/build-object-images.java`), and the map's own background isn't
+ *  reliably black -- only [com.astrocompass.ui.theme.AppTheme.Night] is; Light/Dark come straight
+ *  from Material's default color schemes -- so a plain-alpha draw would show as a stark black
+ *  rectangle in both. Screen ignores near-black source pixels and only brightens toward the
+ *  photo's actual stars/nebulosity, so the image blends into the map instead of sitting on top of
+ *  it, regardless of theme.
+ *
+ *  A fade is masked on top (via [BlendMode.DstIn] onto its own offscreen layer, so it only affects
+ *  this photo, not whatever's already drawn on the map underneath) rather than left as a hard
+ *  rectangle -- the frame's own straight edges/corners are otherwise the most obvious "this is a
+ *  pasted-on photo" tell, worse than the black background [BlendMode.Screen] already handles.
+ *  Rectangular -- matching the frame's own shape, rather than an inscribed circle/ellipse that
+ *  would cut into the frame's corners even where the underlying photo has real, undistorted sky
+ *  data -- built from two independent [BlendMode.DstIn] passes, a horizontal fade then a vertical
+ *  one; DstIn multiplies alpha, so stacking them fades each corner by *both* axes' falloff at
+ *  once (correctly stronger there) while an edge midpoint only fades by the one axis it's actually
+ *  close to. */
+private fun DrawScope.drawObjectPhoto(center: Offset, image: ImageBitmap, targetLongestEdgePx: Float, rotationDegrees: Float, alpha: Float) {
+    if (image.width <= 0 || image.height <= 0) return
+    val pixelScale = targetLongestEdgePx / max(image.width, image.height).toFloat()
+    val drawWidth = image.width * pixelScale
+    val drawHeight = image.height * pixelScale
     rotate(rotationDegrees, pivot = center) {
         translate(left = center.x - drawWidth / 2f, top = center.y - drawHeight / 2f) {
-            with(painter) { draw(Size(drawWidth, drawHeight), alpha = alpha) }
+            val bounds = Rect(Offset.Zero, Size(drawWidth, drawHeight))
+            drawContext.canvas.saveLayer(bounds, Paint())
+            drawImage(
+                image = image,
+                dstSize = IntSize(drawWidth.roundToInt(), drawHeight.roundToInt()),
+                alpha = alpha,
+                blendMode = BlendMode.Screen,
+            )
+            drawRect(
+                brush = Brush.horizontalGradient(*PHOTO_FADE_AXIS_STOPS, startX = 0f, endX = drawWidth),
+                size = bounds.size,
+                blendMode = BlendMode.DstIn,
+            )
+            drawRect(
+                brush = Brush.verticalGradient(*PHOTO_FADE_AXIS_STOPS, startY = 0f, endY = drawHeight),
+                size = bounds.size,
+                blendMode = BlendMode.DstIn,
+            )
+            drawContext.canvas.restore()
         }
     }
 }

@@ -99,7 +99,8 @@ fun SettingsScreen(
             Text(
                 "Stars: HYG Database (Astronomy Nexus / David Nash), CC BY-SA 4.0.\n" +
                     "Deep sky: OpenNGC (Mattia Verga), CC BY-SA 4.0.\n" +
-                    "Constellation lines: d3-celestial (Olaf Frohn), BSD-3-Clause.",
+                    "Constellation lines: d3-celestial (Olaf Frohn), BSD-3-Clause.\n" +
+                    "Deep-sky photos: Digitized Sky Survey (STScI / AAO-UKST) via CDS hips2fits.",
                 style = MaterialTheme.typography.bodySmall,
             )
 

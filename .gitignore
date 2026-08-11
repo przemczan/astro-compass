@@ -20,3 +20,4 @@ node_modules/
 .claude
 /keystore/
 /tools/image-staging/
+/tools/image-staging-hips2fits/
