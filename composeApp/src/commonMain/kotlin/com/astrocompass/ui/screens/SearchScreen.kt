@@ -26,6 +26,7 @@ import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
@@ -40,13 +41,20 @@ import com.astrocompass.catalog.CatalogSearch
 import com.astrocompass.catalog.SearchCategory
 import com.astrocompass.catalog.SkyObject
 
+private const val MAGNITUDE_LIMIT_MIN = 1f
+private const val MAGNITUDE_LIMIT_MAX = 16f
+private const val MAGNITUDE_LIMIT_STEP = 0.5f
+
 /** Search, reached from [MapScreen]'s top-bar search icon -- no map here, just the query/filter
  *  controls and a results list. Picking a result hands it back to the caller (which marks it and
- *  centers the map on it, see `App.kt`'s `onSelectResult`) and this screen closes itself. */
+ *  centers the map on it, see `App.kt`'s `onSelectResult`) and this screen closes itself.
+ *  [magnitudeLimit] lives here (not Settings) since search results are the only thing it affects --
+ *  see [com.astrocompass.catalog.MapObjectFilter] for the map's own, separate filtering. */
 @Composable
 fun SearchScreen(
     catalogRepository: CatalogRepository,
     magnitudeLimit: Float,
+    onMagnitudeLimitChange: (Float) -> Unit,
     query: String,
     onQueryChange: (String) -> Unit,
     category: SearchCategory?,
@@ -84,6 +92,20 @@ fun SearchScreen(
                 },
                 singleLine = true,
             )
+
+            Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
+                Text(
+                    "Results mag ${formatMagnitude(magnitudeLimit)} or brighter",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Slider(
+                    value = magnitudeLimit,
+                    onValueChange = onMagnitudeLimitChange,
+                    valueRange = MAGNITUDE_LIMIT_MIN..MAGNITUDE_LIMIT_MAX,
+                    steps = ((MAGNITUDE_LIMIT_MAX - MAGNITUDE_LIMIT_MIN) / MAGNITUDE_LIMIT_STEP).toInt() - 1,
+                )
+            }
 
             Row(
                 Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 16.dp),

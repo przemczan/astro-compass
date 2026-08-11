@@ -191,8 +191,16 @@ class AppContainer(
         capturedAtEpochMillis: Long,
     ): PlateSolveAttempt? {
         val detections = CentroidDetector.detect(frame.luminance, frame.width, frame.height)
+        // Restricted to named/Bayer/Flamsteed stars even though stars.bin itself now also carries
+        // unnamed mag<=7 field stars (added for sky map density) -- PlateSolver's candidate-pair
+        // matching is O(candidates^2) per anchor pair (see PlateSolverCatalogDensityTest's tuning
+        // notes) with nothing else bounding it below MAX_CANDIDATES within PLATE_SOLVE_SEARCH_RADIUS,
+        // so letting the denser catalog flow straight through would multiply solve time by roughly
+        // (total stars / named stars)^2 in a typical field. This keeps solver density -- and
+        // therefore solve time -- exactly what it was before stars.bin grew.
         val referenceStars = catalogRepository.all
             .filterIsInstance<StarObject>()
+            .filter { it.properName.isNotEmpty() || it.bayer.isNotEmpty() || it.flamsteed != 0 }
             .map { ReferenceStar(it.j2000.rightAscension, it.j2000.declination, it.magnitude) }
 
         val result = PlateSolver.solve(

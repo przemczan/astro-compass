@@ -30,7 +30,7 @@ class CatalogRepository {
         val starBytes = Res.readBytes("files/stars.bin")
         val dsoBytes = Res.readBytes("files/dso.bin")
         val constellationBytes = Res.readBytes("files/constellations.bin")
-        // Decoding ~16k records (string allocations included) is real CPU work -- keep it off
+        // Decoding ~75k records (string allocations included) is real CPU work -- keep it off
         // the caller's dispatcher, which for AppContainer's startup launch is Dispatchers.Main.
         withContext(Dispatchers.Default) {
             val stars = CatalogFormat.decodeStars(starBytes)

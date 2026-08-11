@@ -11,9 +11,15 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 /**
- * Measures -- rather than assumes -- whether the bundled `stars.bin` (curated to named/Bayer/
- * Flamsteed stars only, mag <= 7, see `tools/build-catalogs.mjs`) is dense enough to plate-solve
- * against. It's read here as a plain JVM classpath resource, matching [CatalogFormatTest]'s
+ * Measures -- rather than assumes -- whether the star catalog the solver actually searches against
+ * is dense enough to plate-solve a typical field. `stars.bin` itself (mag <= 7, see
+ * `tools/build-catalogs.mjs`) now also carries unnamed field stars added for sky map density, but
+ * `AppContainer.solveAgainstCatalog` filters back down to named/Bayer/Flamsteed-only before calling
+ * [PlateSolver.solve] -- letting the full, denser catalog through would multiply the O(candidates^2)
+ * hypothesis search by roughly (total stars / named stars)^2 per anchor pair in a typical field (this
+ * test ran at ~250s against the unfiltered catalog before that filter was applied here to match, vs.
+ * a fraction of a second filtered). This test re-applies the identical filter so it measures what the
+ * solver really sees. It's read here as a plain JVM classpath resource, matching [CatalogFormatTest]'s
  * approach and its reasoning about why this can't live in `commonTest`.
  *
  * If this test ever starts failing on a real device photo (not simulated here), that's the
@@ -40,6 +46,7 @@ class PlateSolverCatalogDensityTest {
     @Test
     fun bundledStarCatalog_isDenseEnoughToSolveATypicalCameraField() {
         val stars = CatalogFormat.decodeStars(readResource("stars.bin"))
+            .filter { it.properName.isNotEmpty() || it.bayer.isNotEmpty() || it.flamsteed != 0 }
         val referenceStars = stars.map { ReferenceStar(it.j2000.rightAscension, it.j2000.declination, it.magnitude) }
 
         // A patch of sky away from the crowded galactic plane and the poles. Deliberately a much

@@ -12,6 +12,7 @@ import androidx.compose.ui.Modifier
 import com.astrocompass.astro.time.currentEpochMillis
 import com.astrocompass.catalog.SearchCategory
 import com.astrocompass.catalog.SkyObject
+import com.astrocompass.guiding.ReferenceOrigin
 import com.astrocompass.guiding.currentHorizontal
 import com.astrocompass.ui.BackHandler
 import com.astrocompass.ui.screens.AlignmentScreen
@@ -24,7 +25,7 @@ import com.astrocompass.ui.theme.AppTheme
 import com.astrocompass.ui.theme.GuiderTheme
 
 @Composable
-fun GuiderApp(container: AppContainer) {
+fun GuiderApp(container: AppContainer, onExitApp: () -> Unit = {}) {
     val themeOverride by container.preferences.appTheme.collectAsState()
     val resolvedTheme = themeOverride ?: if (isSystemInDarkTheme()) AppTheme.Dark else AppTheme.Light
 
@@ -49,6 +50,11 @@ fun GuiderApp(container: AppContainer) {
         val magnitudeLimit by container.preferences.magnitudeLimit.collectAsState()
         val toleranceDegrees by container.preferences.onTargetToleranceDegrees.collectAsState()
         val showObjectImages by container.preferences.showObjectImages.collectAsState()
+        val mapObjectFilter by container.preferences.mapObjectFilter.collectAsState()
+        // Distinct from PointingService.isAligned, which is also true under the compass fallback --
+        // MapScreen's "Aligned" button specifically means a real star alignment, not a rough guess.
+        val absoluteReferenceState by container.absoluteReference.current.collectAsState()
+        val isStarAligned = absoluteReferenceState?.origin == ReferenceOrigin.STAR_ALIGNMENT
 
         val location = resolvedLocation
 
@@ -99,12 +105,14 @@ fun GuiderApp(container: AppContainer) {
                 onOpenSettings = { showSettings = true },
                 onExitGuiding = { isGuiding = false },
                 showObjectPhotos = showObjectImages,
+                mapObjectFilter = mapObjectFilter,
                 modifier = Modifier.fillMaxSize(),
             )
 
             showSearch -> SearchScreen(
                 catalogRepository = container.catalogRepository,
                 magnitudeLimit = magnitudeLimit,
+                onMagnitudeLimitChange = { container.preferences.setMagnitudeLimit(it) },
                 query = searchQuery,
                 onQueryChange = { searchQuery = it },
                 category = searchCategory,
@@ -125,8 +133,8 @@ fun GuiderApp(container: AppContainer) {
             else -> MapScreen(
                 catalogRepository = container.catalogRepository,
                 location = location,
-                magnitudeLimit = magnitudeLimit,
                 pointingService = container.pointingService,
+                isStarAligned = isStarAligned,
                 selectedTarget = selectedTarget,
                 onSelectTarget = { target ->
                     selectedTarget = target
@@ -136,9 +144,15 @@ fun GuiderApp(container: AppContainer) {
                 viewport = searchViewport,
                 onViewportChange = { searchViewport = it },
                 showObjectPhotos = showObjectImages,
+                mapObjectFilter = mapObjectFilter,
+                onMapObjectFilterChange = { container.preferences.setMapObjectFilter(it) },
                 onOpenSearch = { showSearch = true },
                 onOpenSettings = { showSettings = true },
                 onOpenAlignment = { showAlignment = true },
+                // A confirmed exit clears any star alignment first -- a stale one from a previous
+                // session (potentially a different, unknown mounting) is worse than none at all;
+                // the compass fallback re-engages automatically, same as after a fresh install.
+                onExitApp = { container.clearAlignment(); onExitApp() },
                 modifier = Modifier.fillMaxSize(),
             )
         }

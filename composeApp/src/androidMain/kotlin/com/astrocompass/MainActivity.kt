@@ -58,7 +58,7 @@ class MainActivity : ComponentActivity() {
         )
 
         setContent {
-            GuiderApp(container)
+            GuiderApp(container, onExitApp = { finish() })
         }
     }
 

@@ -110,6 +110,34 @@ class SkyMapSceneTest {
     }
 
     @Test
+    fun starAlpha_fadesGraduallyAsFieldOfViewNarrows() {
+        // A mag 5 star sits inside starMagnitudeLimitFor's fade band at wide-ish FOV and fully
+        // inside the limit once zoomed in past its own reveal point -- alpha should ramp smoothly
+        // (never popping straight from 0 to 1) rather than the object simply appearing/disappearing.
+        val directions = listOf(star(1, 5f))
+
+        val hidden = SkyMapScene.build(directions, viewport(180.0), canvasWidth = 1000f, canvasHeight = 1000f)
+        val fading = SkyMapScene.build(directions, viewport(90.0), canvasWidth = 1000f, canvasHeight = 1000f)
+        val revealed = SkyMapScene.build(directions, viewport(40.0), canvasWidth = 1000f, canvasHeight = 1000f)
+
+        assertTrue(hidden.isEmpty(), "Expected a mag 5 star fully hidden at full-sky zoom")
+        assertEquals(1, fading.size)
+        assertTrue(fading.single().alpha in 0f..1f)
+        assertTrue(fading.single().alpha < 1f, "Expected a partial fade mid-zoom, not full brightness yet")
+        assertEquals(1, revealed.size)
+        assertEquals(1f, revealed.single().alpha, "Expected full brightness once zoomed in past the star's reveal point")
+    }
+
+    @Test
+    fun starAlpha_isFullBrightnessComfortablyInsideTheLimit() {
+        val directions = listOf(star(1, 0f))
+
+        val scene = SkyMapScene.build(directions, viewport(180.0), canvasWidth = 1000f, canvasHeight = 1000f)
+
+        assertEquals(1f, scene.single().alpha)
+    }
+
+    @Test
     fun drawCap_keepsOnlyTheBrightest() {
         val directions = listOf(0f, 0.5f, 1f, 1.5f, 2f).mapIndexed { index, mag -> star(index, mag) }
 

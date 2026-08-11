@@ -25,9 +25,17 @@ const NGC_URL = 'https://raw.githubusercontent.com/mattiaverga/OpenNGC/master/da
 const ADDENDUM_URL = 'https://raw.githubusercontent.com/mattiaverga/OpenNGC/master/database_files/addendum.csv';
 const CONSTELLATION_LINES_URL = 'https://raw.githubusercontent.com/ofrohn/d3-celestial/master/data/constellations.lines.json';
 
-// Stars fainter than this are dropped even if named -- keeps the blob to genuinely
-// identifiable/pointable stars rather than the ~12k anonymous mag<=7 field stars HYG also carries.
-const STAR_MAG_LIMIT = 7.0;
+// Stars fainter than this are dropped. Set from HYG's own per-magnitude star counts, not a round
+// number: binning HYG by magnitude, the count per 0.5-mag bin climbs steadily through mag 8.0
+// (~20.3k stars in that bin), barely grows into 8.5 (~21.7k, the peak), then drops outright at 9.0
+// (~15.7k) and keeps falling -- the signature of catalog incompleteness, not real sky sparseness
+// (a genuinely complete magnitude-limited sample keeps growing per bin all the way to much fainter
+// limits). 8.5 is as deep as HYG can be trusted to represent the real sky reasonably evenly; going
+// fainter would start showing an increasingly patchy, unrepresentative sample rather than more real
+// stars, which is worse than not showing them for anything meant to match what's actually visible
+// (e.g. star-hopping at the eyepiece) -- a true telescope-depth catalog (mag 11+) would need a
+// different source entirely (Tycho-2, Gaia), not just a higher number here.
+const STAR_MAG_LIMIT = 8.5;
 
 const args = parseArgs(process.argv.slice(2));
 
@@ -134,7 +142,12 @@ async function buildStars() {
     const proper = r[idx.proper] || '';
     const bayer = r[idx.bayer] || '';
     const flam = r[idx.flam] || '';
-    if (!proper && !bayer && !flam) continue; // no usable label -- skip anonymous field stars
+    // Anonymous field stars (no proper/Bayer/Flamsteed label) are kept for sky map density --
+    // StarObject.displayName falls back to its catalog id for these, so they render as an unlabeled
+    // dot rather than crashing or showing a blank name. PlateSolver's reference set is filtered back
+    // down to named/Bayer/Flamsteed-only at the AppContainer call site that builds it, since its
+    // candidate matching is O(candidates^2) and isn't meant to absorb this catalog's full density --
+    // see the comment there.
 
     stars.push({
       id,
@@ -164,7 +177,7 @@ async function buildStars() {
   }
   mkdirSync(OUT_DIR, { recursive: true });
   writeFileSync(join(OUT_DIR, 'stars.bin'), w.toBuffer());
-  console.log(`stars.bin: ${stars.length} stars (mag <= ${STAR_MAG_LIMIT}, named or Bayer/Flamsteed only)`);
+  console.log(`stars.bin: ${stars.length} stars (mag <= ${STAR_MAG_LIMIT})`);
 }
 
 // OpenNGC "Type" column -> ordinal, matching catalog.SkyObjectType's declaration order.

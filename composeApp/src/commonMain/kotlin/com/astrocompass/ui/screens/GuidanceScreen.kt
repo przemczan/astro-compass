@@ -49,7 +49,7 @@ import androidx.compose.ui.window.Dialog
 import com.astrocompass.astro.coords.HorizontalCoordinates
 import com.astrocompass.astro.time.currentEpochMillis
 import com.astrocompass.catalog.CatalogRepository
-import com.astrocompass.catalog.DeepSkyObject
+import com.astrocompass.catalog.MapObjectFilter
 import com.astrocompass.catalog.SkyObject
 import com.astrocompass.guiding.AbsoluteReferenceState
 import com.astrocompass.guiding.GuidanceCalculator
@@ -66,7 +66,7 @@ import com.astrocompass.ui.components.mapOverlayScrim
 import com.astrocompass.ui.components.SkyMap
 import com.astrocompass.ui.components.SkyMapMarker
 import com.astrocompass.ui.components.ToolbarActionButton
-import com.astrocompass.ui.skymap.SkyMapDirectionCache
+import com.astrocompass.ui.components.rememberSkyMapSnapshot
 import com.astrocompass.ui.skymap.SkyMapViewport
 import com.astrocompass.ui.theme.OnTargetGreen
 import kotlinx.coroutines.delay
@@ -110,6 +110,7 @@ fun GuidanceScreen(
     onOpenSettings: () -> Unit,
     onExitGuiding: () -> Unit,
     showObjectPhotos: Boolean,
+    mapObjectFilter: MapObjectFilter,
     modifier: Modifier = Modifier,
 ) {
     val isAligned by pointingService.isAligned.collectAsState()
@@ -127,27 +128,12 @@ fun GuidanceScreen(
     // The map's catalog snapshot is rebuilt on its own, much slower cadence than `now` above --
     // recomputing precession/ENU for the whole catalog every UPDATE_INTERVAL_MS (for a
     // sub-pixel-at-any-zoom improvement; the sky moves ~15"/s) would be pure waste.
-    var mapNow by remember { mutableStateOf(currentEpochMillis()) }
-    LaunchedEffect(Unit) {
-        while (true) {
-            delay(CATALOG_REFRESH_INTERVAL_MS)
-            mapNow = currentEpochMillis()
-        }
-    }
-    val catalogLoaded by catalogRepository.isLoaded.collectAsState()
-    val mapDirections = remember(catalogLoaded, mapNow) {
-        if (catalogLoaded) SkyMapDirectionCache.build(catalogRepository.all, location, mapNow) else emptyList()
-    }
-    val mapConstellationLines = remember(catalogLoaded, mapNow) {
-        if (catalogLoaded) SkyMapDirectionCache.buildConstellationDirections(catalogRepository.constellationLines, location, mapNow) else emptyList()
-    }
-    val mapNorthOffsets = remember(catalogLoaded, mapNow) {
-        if (catalogLoaded) {
-            SkyMapDirectionCache.northOffsetDirections(catalogRepository.all.filterIsInstance<DeepSkyObject>(), location, mapNow)
-        } else {
-            emptyMap()
-        }
-    }
+    val snapshot = rememberSkyMapSnapshot(
+        catalogRepository, location,
+        refreshIntervalMillis = CATALOG_REFRESH_INTERVAL_MS,
+        filterKey = mapObjectFilter,
+        catalogFilter = mapObjectFilter::matches,
+    )
 
     var mapViewport by remember { mutableStateOf(SkyMapViewport.DEFAULT) }
     var followPointing by remember { mutableStateOf(true) }
@@ -248,12 +234,12 @@ fun GuidanceScreen(
             // than separate sections competing with it for vertical space.
             Box(Modifier.fillMaxWidth().weight(1f).padding(top = 16.dp)) {
                 SkyMap(
-                    directions = mapDirections,
+                    directions = snapshot.directions,
                     viewport = mapViewport,
                     onViewportChange = { mapViewport = it },
                     onManualInteraction = { followPointing = false },
-                    constellationLines = mapConstellationLines,
-                    northOffsetDirections = mapNorthOffsets,
+                    constellationLines = snapshot.constellationLines,
+                    northOffsetDirections = snapshot.northOffsetDirections,
                     showObjectPhotos = showObjectPhotos,
                     markers = listOf(
                         SkyMapMarker(direction = targetDirection, color = MaterialTheme.colorScheme.primary, label = target.displayName),

@@ -1,6 +1,7 @@
 package com.astrocompass.settings
 
 import com.astrocompass.astro.Angle
+import com.astrocompass.catalog.MapObjectFilter
 import com.astrocompass.guiding.CameraMounting
 import com.astrocompass.guiding.TelescopeAxis
 import com.astrocompass.location.ObserverLocation
@@ -100,6 +101,26 @@ class AppPreferences(private val settings: Settings) {
         settings.putBoolean(KEY_SHOW_OBJECT_IMAGES, show)
     }
 
+    /** The sky map's category filter (see [com.astrocompass.ui.components.MapFilterSheet]) --
+     *  every category on by default, matching the map's behavior before this filter existed. */
+    val mapObjectFilter = MutableStateFlow(
+        MapObjectFilter(
+            showSolarSystem = settings.getBoolean(KEY_SHOW_SOLAR_SYSTEM, true),
+            showGalaxies = settings.getBoolean(KEY_SHOW_GALAXIES, true),
+            showNebulae = settings.getBoolean(KEY_SHOW_NEBULAE, true),
+            showClusters = settings.getBoolean(KEY_SHOW_CLUSTERS, true),
+            showOther = settings.getBoolean(KEY_SHOW_OTHER, true),
+        )
+    )
+    fun setMapObjectFilter(filter: MapObjectFilter) {
+        mapObjectFilter.value = filter
+        settings.putBoolean(KEY_SHOW_SOLAR_SYSTEM, filter.showSolarSystem)
+        settings.putBoolean(KEY_SHOW_GALAXIES, filter.showGalaxies)
+        settings.putBoolean(KEY_SHOW_NEBULAE, filter.showNebulae)
+        settings.putBoolean(KEY_SHOW_CLUSTERS, filter.showClusters)
+        settings.putBoolean(KEY_SHOW_OTHER, filter.showOther)
+    }
+
     private companion object {
         const val KEY_TELESCOPE_AXIS = "telescope_axis"
         const val KEY_TOLERANCE = "on_target_tolerance_degrees"
@@ -112,6 +133,11 @@ class AppPreferences(private val settings: Settings) {
         const val KEY_MANUAL_ELEVATION = "manual_elevation"
         const val KEY_LAST_TARGET = "last_target_id"
         const val KEY_SHOW_OBJECT_IMAGES = "show_object_images"
+        const val KEY_SHOW_SOLAR_SYSTEM = "show_solar_system"
+        const val KEY_SHOW_GALAXIES = "show_galaxies"
+        const val KEY_SHOW_NEBULAE = "show_nebulae"
+        const val KEY_SHOW_CLUSTERS = "show_clusters"
+        const val KEY_SHOW_OTHER = "show_other"
 
         const val DEFAULT_TOLERANCE_DEGREES = 0.5
         const val DEFAULT_MAGNITUDE_LIMIT = 13f

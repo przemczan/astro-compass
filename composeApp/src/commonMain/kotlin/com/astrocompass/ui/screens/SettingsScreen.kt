@@ -87,10 +87,6 @@ fun SettingsScreen(
             ToleranceSection(preferences)
 
             HorizontalDivider(Modifier.padding(vertical = 16.dp))
-            SectionTitle("Deep-sky magnitude limit")
-            MagnitudeLimitSection(preferences)
-
-            HorizontalDivider(Modifier.padding(vertical = 16.dp))
             SectionTitle("Appearance")
             ThemeSection(preferences)
 
@@ -202,22 +198,6 @@ private fun ToleranceSection(preferences: AppPreferences) {
         value = current.toFloat(),
         onValueChange = { preferences.setOnTargetToleranceDegrees(it.toDouble()) },
         valueRange = 0.1f..3.0f,
-    )
-}
-
-private const val MAGNITUDE_LIMIT_MIN = 1f
-private const val MAGNITUDE_LIMIT_MAX = 16f
-private const val MAGNITUDE_LIMIT_STEP = 0.5f
-
-@Composable
-private fun MagnitudeLimitSection(preferences: AppPreferences) {
-    val current by preferences.magnitudeLimit.collectAsState()
-    Text("mag ${formatDegrees(current.toDouble())} or brighter", style = MaterialTheme.typography.bodyMedium)
-    Slider(
-        value = current,
-        onValueChange = { preferences.setMagnitudeLimit(it) },
-        valueRange = MAGNITUDE_LIMIT_MIN..MAGNITUDE_LIMIT_MAX,
-        steps = ((MAGNITUDE_LIMIT_MAX - MAGNITUDE_LIMIT_MIN) / MAGNITUDE_LIMIT_STEP).toInt() - 1,
     )
 }
 

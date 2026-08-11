@@ -15,13 +15,17 @@ import androidx.compose.material.icons.filled.Explore
 import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material3.BottomAppBar
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
@@ -30,6 +34,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -37,40 +42,72 @@ import androidx.compose.ui.unit.dp
 import com.astrocompass.astro.coords.HorizontalCoordinates
 import com.astrocompass.astro.time.currentEpochMillis
 import com.astrocompass.catalog.CatalogRepository
-import com.astrocompass.catalog.DeepSkyObject
+import com.astrocompass.catalog.MapObjectFilter
 import com.astrocompass.catalog.SkyObject
 import com.astrocompass.guiding.PointingService
 import com.astrocompass.guiding.currentHorizontal
 import com.astrocompass.location.ObserverLocation
+import com.astrocompass.ui.BackHandler
 import com.astrocompass.ui.components.MAP_ZOOM_STEP_FACTOR
+import com.astrocompass.ui.components.MapFilterSheet
 import com.astrocompass.ui.components.MapFollowZoomControls
 import com.astrocompass.ui.components.SkyMap
 import com.astrocompass.ui.components.SkyMapMarker
 import com.astrocompass.ui.components.ToolbarActionButton
-import com.astrocompass.ui.skymap.SkyMapDirectionCache
+import com.astrocompass.ui.components.rememberSkyMapSnapshot
 import com.astrocompass.ui.skymap.SkyMapViewport
-import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+
+/** How long a second back press has to follow the first to actually exit, rather than just
+ *  re-showing the "press back again" message -- long enough for a deliberate double press,
+ *  short enough that it doesn't feel like the first press did nothing. */
+private const val DOUBLE_BACK_TO_EXIT_WINDOW_MILLIS = 2_000L
 
 /** The main/home screen: a full-sky browse map plus whatever's currently marked. Search lives on
- *  its own screen ([SearchScreen]) reached via the top-bar search icon -- this screen only ever
- *  shows the magnitude-filtered catalog, never a query- or category-narrowed subset. */
+ *  its own screen ([SearchScreen]) reached via the top-bar search icon -- this screen shows the
+ *  same catalog [SkyMap]'s own zoom-driven reveal curves would show anywhere else (see
+ *  [rememberSkyMapSnapshot]), never a query- or category-narrowed subset.
+ *
+ *  This is also the app's back-navigation root: [BackHandler] here only fires when nothing else
+ *  (Settings/Alignment/Search/Guidance) is showing, since `App.kt`'s own `BackHandler` claims the
+ *  back press for inter-screen navigation whenever one of those is up. A single press here shows a
+ *  "press again to exit" [SnackbarHost] rather than exiting immediately, so a back press meant to
+ *  dismiss something else (a keyboard, a sheet) can't accidentally quit the app instead. */
 @Composable
 fun MapScreen(
     catalogRepository: CatalogRepository,
     location: ObserverLocation?,
-    magnitudeLimit: Float,
     pointingService: PointingService,
+    isStarAligned: Boolean,
     selectedTarget: SkyObject?,
     onSelectTarget: (SkyObject) -> Unit,
     onGoto: () -> Unit,
     viewport: SkyMapViewport,
     onViewportChange: (SkyMapViewport) -> Unit,
     showObjectPhotos: Boolean,
+    mapObjectFilter: MapObjectFilter,
+    onMapObjectFilterChange: (MapObjectFilter) -> Unit,
     onOpenSearch: () -> Unit,
     onOpenSettings: () -> Unit,
     onOpenAlignment: () -> Unit,
+    onExitApp: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    var showFilterSheet by remember { mutableStateOf(false) }
+
+    var lastBackPressEpochMillis by remember { mutableStateOf(0L) }
+    val snackbarHostState = remember { SnackbarHostState() }
+    val coroutineScope = rememberCoroutineScope()
+    BackHandler(enabled = true) {
+        val now = currentEpochMillis()
+        if (now - lastBackPressEpochMillis <= DOUBLE_BACK_TO_EXIT_WINDOW_MILLIS) {
+            onExitApp()
+        } else {
+            lastBackPressEpochMillis = now
+            coroutineScope.launch { snackbarHostState.showSnackbar("Press back again to exit") }
+        }
+    }
+
     Scaffold(
         modifier = modifier,
         topBar = {
@@ -85,10 +122,20 @@ fun MapScreen(
         bottomBar = {
             BottomAppBar {
                 Spacer(Modifier.weight(1f))
-                ToolbarActionButton(icon = Icons.Default.Explore, label = "Align", onClick = onOpenAlignment)
+                ToolbarActionButton(icon = Icons.Default.Visibility, label = "Filter", onClick = { showFilterSheet = true })
+                ToolbarActionButton(
+                    icon = Icons.Default.Explore,
+                    label = if (isStarAligned) "Aligned" else "Not aligned",
+                    onClick = onOpenAlignment,
+                    // Flags that action's still needed -- a fresh "not aligned yet" state, not an
+                    // error, so a neutral "needs attention" tone (primary), not error/warning ones.
+                    containerColor = if (isStarAligned) null else MaterialTheme.colorScheme.primaryContainer,
+                    contentColor = if (isStarAligned) LocalContentColor.current else MaterialTheme.colorScheme.onPrimaryContainer,
+                )
                 Spacer(Modifier.weight(1f))
             }
         },
+        snackbarHost = { SnackbarHost(snackbarHostState) },
     ) { padding ->
         if (location == null) {
             LocationRequiredPrompt(onOpenSettings, Modifier.padding(padding))
@@ -103,24 +150,12 @@ fun MapScreen(
             return@Scaffold
         }
 
-        var now by remember { mutableStateOf(currentEpochMillis()) }
-        LaunchedEffect(Unit) {
-            while (true) {
-                delay(30_000)
-                now = currentEpochMillis()
-            }
-        }
-
-        val mapObjects = remember(isLoaded, magnitudeLimit) {
-            catalogRepository.all.filter { it.magnitude.isNaN() || it.magnitude <= magnitudeLimit }
-        }
-        val mapDirections = remember(mapObjects, now) { SkyMapDirectionCache.build(mapObjects, location, now) }
-        val mapConstellationLines = remember(isLoaded, now) {
-            if (isLoaded) SkyMapDirectionCache.buildConstellationDirections(catalogRepository.constellationLines, location, now) else emptyList()
-        }
-        val mapNorthOffsets = remember(mapObjects, now) {
-            SkyMapDirectionCache.northOffsetDirections(mapObjects.filterIsInstance<DeepSkyObject>(), location, now)
-        }
+        val snapshot = rememberSkyMapSnapshot(
+            catalogRepository, location,
+            filterKey = mapObjectFilter,
+            catalogFilter = mapObjectFilter::matches,
+        )
+        val now = snapshot.nowEpochMillis
 
         // Off by default -- unlike Guidance, this is a browse map, so following the phone's
         // pointing isn't the reason someone opened it. Same recenter-on-tick pattern as
@@ -138,12 +173,12 @@ fun MapScreen(
         Column(Modifier.padding(padding).fillMaxSize()) {
             Box(Modifier.fillMaxWidth().weight(1f)) {
                 SkyMap(
-                    directions = mapDirections,
+                    directions = snapshot.directions,
                     viewport = viewport,
                     onViewportChange = onViewportChange,
                     onManualInteraction = { followPointing = false },
-                    constellationLines = mapConstellationLines,
-                    northOffsetDirections = mapNorthOffsets,
+                    constellationLines = snapshot.constellationLines,
+                    northOffsetDirections = snapshot.northOffsetDirections,
                     showObjectPhotos = showObjectPhotos,
                     markers = listOfNotNull(selectedTarget?.let { target ->
                         SkyMapMarker(
@@ -172,6 +207,14 @@ fun MapScreen(
                 }
             }
         }
+    }
+
+    if (showFilterSheet) {
+        MapFilterSheet(
+            filter = mapObjectFilter,
+            onFilterChange = onMapObjectFilterChange,
+            onDismiss = { showFilterSheet = false },
+        )
     }
 }
 

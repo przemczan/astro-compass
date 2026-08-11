@@ -53,7 +53,7 @@ import com.astrocompass.guiding.currentHorizontal
 import com.astrocompass.location.ObserverLocation
 import com.astrocompass.ui.components.SkyMap
 import com.astrocompass.ui.components.SkyMapMarker
-import com.astrocompass.ui.skymap.SkyMapDirectionCache
+import com.astrocompass.ui.components.rememberSkyMapSnapshot
 import com.astrocompass.ui.skymap.SkyMapViewport
 import com.astrocompass.ui.theme.OnTargetGreen
 import kotlinx.coroutines.delay
@@ -104,19 +104,16 @@ fun AlignmentScreen(
     val suggestions = remember(catalogLoaded, now, points) {
         if (!catalogLoaded) emptyList() else suggestStars(catalogRepository, location, now, points.map { it.skyDirection })
     }
-    val suggestedIds = remember(suggestions) { suggestions.map { it.id }.toSet() }
     val sortedSuggestions = remember(suggestions, sortMode) {
         when (sortMode) {
             StarSortMode.MAGNITUDE -> suggestions
             StarSortMode.NAME -> suggestions.sortedBy { it.displayName }
         }
     }
-    val starDirections = remember(catalogLoaded, now) {
-        if (!catalogLoaded) emptyList() else SkyMapDirectionCache.build(catalogRepository.all.filterIsInstance<StarObject>(), location, now)
-    }
-    val constellationDirections = remember(catalogLoaded, now) {
-        if (!catalogLoaded) emptyList() else SkyMapDirectionCache.buildConstellationDirections(catalogRepository.constellationLines, location, now)
-    }
+    // Deliberately its own (slower) refresh cadence, decoupled from the `now` above -- that one
+    // exists for suggestStars and the alignment countdown/age display, which want to be current to
+    // the second, not for how often the map itself needs to be re-precessed.
+    val snapshot = rememberSkyMapSnapshot(catalogRepository, location, catalogFilter = { it is StarObject })
     val syncedMarkers = remember(points) {
         points.map { point ->
             SkyMapMarker(
@@ -228,12 +225,11 @@ fun AlignmentScreen(
 
                     if (mapMode) {
                         SkyMap(
-                            directions = starDirections,
+                            directions = snapshot.directions,
                             viewport = viewport,
                             onViewportChange = { viewport = it },
-                            highlightedIds = suggestedIds,
                             markers = syncedMarkers,
-                            constellationLines = constellationDirections,
+                            constellationLines = snapshot.constellationLines,
                             onSelect = { obj -> (obj as? StarObject)?.let { pendingTarget = it } },
                             modifier = Modifier.fillMaxWidth().weight(1f),
                         )

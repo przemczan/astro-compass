@@ -7,9 +7,11 @@ import com.astrocompass.astro.projection.PlanePoint
 import com.astrocompass.astro.projection.StereographicProjection
 import com.astrocompass.catalog.SkyObject
 import com.astrocompass.catalog.SolarSystemObject
+import com.astrocompass.catalog.StarObject
 import kotlin.math.PI
 import kotlin.math.atan
 import kotlin.math.cos
+import kotlin.math.ln
 import kotlin.math.min
 import kotlin.math.sqrt
 import kotlin.math.tan
@@ -17,8 +19,14 @@ import kotlin.math.tan
 /** Bounds how many objects [SkyMapScene.build] ever returns. Nothing scales the draw count down
  *  automatically, and a dense field (the galactic plane, the Virgo cluster) could stay slow
  *  regardless of the magnitude-vs-FOV curve below -- the same hazard `PLATE_SOLVE_TIMEOUT_MILLIS`
- *  guards against on the plate-solve path (see `AppContainer`). */
-private const val DEFAULT_MAX_DRAWN_OBJECTS = 600
+ *  guards against on the plate-solve path (see `AppContainer`). Kept well above what a typical
+ *  view actually holds (measured against the real bundled catalog across several sky directions,
+ *  including the real galactic center: stars+DSOs peak around 4700 at field of view ~40 degrees,
+ *  DSOs alone driving most of that -- see [magnitudeLimitFor]'s doc comment, which this cap does
+ *  not attempt to retune) so [magnitudeLimitFor]/[starMagnitudeLimitFor] -- not this cap -- decide
+ *  which objects show; a cap that binds routinely would drop objects by a discrete top-N cutoff
+ *  that [FADE_MAGNITUDE_RANGE] can't smooth the way it smooths the magnitude-curve threshold. */
+private const val DEFAULT_MAX_DRAWN_OBJECTS = 6000
 
 /** Objects with no known magnitude ([Float.NaN], e.g. many dark nebulae) are treated as very
  *  faint for the FOV-based limit below, unlike [com.astrocompass.catalog.CatalogSearch]'s
@@ -35,12 +43,22 @@ private const val NO_MAGNITUDE_SENTINEL = 99f
  *  star or DSO magnitude in the catalog. */
 private const val SOLAR_SYSTEM_BODY_SENTINEL = -10f
 
+/** Widens [build]'s hard magnitude cutoff by this much (in magnitudes) so an object fades out over
+ *  a band instead of vanishing outright the instant field of view crosses its threshold -- see
+ *  [ProjectedObject.alpha]. */
+private const val FADE_MAGNITUDE_RANGE = 1.0f
+
 /** One catalog object placed on the map: its projected plane position plus the ENU direction it
  *  came from (kept for markers/hit-testing that need the direction, not just the pixel spot). */
 data class ProjectedObject(
     val skyObject: SkyObject,
     val point: PlanePoint,
     val direction: Vector3,
+    /** 1 for an object comfortably brighter than the current magnitude limit, ramping linearly to
+     *  0 as its magnitude crosses [FADE_MAGNITUDE_RANGE] beyond that limit. [build] never returns
+     *  an object past that point at all. Lets objects fade in/out smoothly as field of view changes
+     *  continuously during a pinch gesture, rather than popping at a hard threshold. */
+    val alpha: Float = 1f,
 )
 
 object SkyMapScene {
@@ -86,6 +104,8 @@ object SkyMapScene {
         val halfWidthUnits = (canvasWidth / 2.0) / pixelsPerUnit * VIEWPORT_BOUNDS_MARGIN
         val halfHeightUnits = (canvasHeight / 2.0) / pixelsPerUnit * VIEWPORT_BOUNDS_MARGIN
         val magnitudeLimit = magnitudeLimitFor(viewport.fieldOfViewDegrees)
+        val starMagnitudeLimit = starMagnitudeLimitFor(viewport.fieldOfViewDegrees)
+        fun limitFor(obj: SkyObject): Float = if (obj is StarObject) starMagnitudeLimit else magnitudeLimit
 
         // A cone cull before projecting -- cheap (one dot product) and skips the trig in
         // StereographicProjection.project for everything far outside the current view. Derived
@@ -99,7 +119,7 @@ object SkyMapScene {
         val cullCosine = cos(cullHalfAngleRadians)
 
         return directions.asSequence()
-            .filter { (obj, _) -> effectiveMagnitude(obj) <= magnitudeLimit }
+            .filter { (obj, _) -> effectiveMagnitude(obj) <= limitFor(obj) + FADE_MAGNITUDE_RANGE }
             .filter { (_, direction) -> (direction dot center) >= cullCosine }
             .mapNotNull { (obj, direction) ->
                 val point = projection.project(direction) ?: return@mapNotNull null
@@ -108,7 +128,10 @@ object SkyMapScene {
                 ) {
                     null
                 } else {
-                    ProjectedObject(obj, point, direction)
+                    val limit = limitFor(obj)
+                    val alpha = ((limit + FADE_MAGNITUDE_RANGE - effectiveMagnitude(obj)) / FADE_MAGNITUDE_RANGE)
+                        .coerceIn(0f, 1f)
+                    ProjectedObject(obj, point, direction, alpha)
                 }
             }
             .sortedBy { effectiveMagnitude(it.skyObject) }
@@ -134,21 +157,57 @@ object SkyMapScene {
         return best
     }
 
-    /** Wide views would be cluttered by every named mag-7 star; narrow views should show
-     *  everything the catalog has. Linear in field of view between those two extremes, reaching
-     *  the 16.0 ceiling by [narrowFov] -- deliberately a moderate 20°, not some much smaller
-     *  angle: dso.bin's median magnitude is ~14, so a curve that only opened up at an extreme
-     *  close-in zoom left galaxies/nebulae sparse at any FOV a user would actually browse at.
-     *  20° still reaches [SkyMapViewport.DEFAULT]'s 90° FOV at magnitude ~10 (584 of 13372 DSOs),
-     *  not the full ceiling immediately, so wide views stay reasonably decluttered. The ceiling
-     *  itself is 16, not [com.astrocompass.catalog.CatalogRepository]'s star cutoff of 7 --
-     *  stars.bin is pre-filtered to mag <= 7 at build time so raising this doesn't add star
-     *  clutter, but dso.bin is not. */
+    /** Governs every [SkyObject] except [StarObject] (see [starMagnitudeLimitFor] for that curve) --
+     *  in practice this means DSOs, since [SolarSystemObject] always passes via its sentinel. Wide
+     *  views would be cluttered by every mag-7 DSO; narrow views should show everything the catalog
+     *  has. Linear in field of view between those two extremes, reaching the 16.0 ceiling by
+     *  [narrowFov] -- deliberately a moderate 20°, not some much smaller angle: dso.bin's median
+     *  magnitude is ~14, so a curve that only opened up at an extreme close-in zoom left
+     *  galaxies/nebulae sparse at any FOV a user would actually browse at. 20° still reaches
+     *  [SkyMapViewport.DEFAULT]'s 90° FOV at magnitude ~10 (584 of 13372 DSOs), not the full ceiling
+     *  immediately, so wide views stay reasonably decluttered. */
     private fun magnitudeLimitFor(fieldOfViewDegrees: Double): Float {
         val wideFov = 180.0
         val narrowFov = 20.0
         val t = ((wideFov - fieldOfViewDegrees) / (wideFov - narrowFov)).coerceIn(0.0, 1.0)
         return (2.5 + t * (16.0 - 2.5)).toFloat()
+    }
+
+    /** [StarObject]s get their own reveal curve rather than sharing [magnitudeLimitFor]: stars.bin
+     *  is pre-filtered to mag <= 8.5 at build time (`STAR_MAG_LIMIT` in tools/build-catalogs.mjs,
+     *  chosen as roughly as deep as HYG's own completeness goes -- see that constant's comment) and,
+     *  unlike [magnitudeLimitFor]'s DSOs, carries every such star sky-wide (not just named/Bayer/
+     *  Flamsteed ones -- see that file), so a curve tuned for dso.bin's sparser distribution badly
+     *  overshoots here: measured against the real bundled catalog, a curve linear in field of view
+     *  put well over 4000 stars in a single default-zoom view (a real phone canvas's visible solid
+     *  angle at a given [SkyMapViewport.fieldOfViewDegrees] is much larger than the FOV number alone
+     *  suggests, given [VIEWPORT_BOUNDS_MARGIN] and a typical tall aspect ratio), heavy enough to
+     *  threaten frame time and defeat the point of a reveal curve.
+     *
+     *  Star count in a fixed-shape viewport scales roughly with area (~[fieldOfViewDegrees]^2) times
+     *  a magnitude-dependent density, so holding perceived density roughly constant across zoom
+     *  needs the cutoff to grow with **ln**([fieldOfViewDegrees]), not the FOV itself. [STAR_LOG_SLOPE]
+     *  and [STAR_CEILING_FOV] are fit against measurements of the real bundled catalog (checked
+     *  across several sky directions, including the real galactic center, not just one) rather than
+     *  picked by eye. [STAR_CEILING_FOV] deliberately trades some of that headroom for reaching
+     *  fainter stars sooner (i.e. at a wider field of view, needing less zoom) -- the peak combined
+     *  stars+DSOs count in view this produces (~4700 at field of view ~40 degrees) is what
+     *  [DEFAULT_MAX_DRAWN_OBJECTS] is sized against. */
+    private const val STAR_CATALOG_MAGNITUDE_CEILING = 8.5f
+    private const val STAR_MAGNITUDE_FLOOR = 3.0f
+    /** Field of view at/below which the curve saturates at [STAR_CATALOG_MAGNITUDE_CEILING] --
+     *  raised from an earlier, stricter fit specifically so more of the catalog's depth shows up at
+     *  a less-zoomed-in field of view, at the cost of a denser view along the way (see
+     *  [DEFAULT_MAX_DRAWN_OBJECTS]'s doc comment for the resulting peak count). */
+    private const val STAR_CEILING_FOV = 10.0
+    private const val STAR_LOG_SLOPE = 1.7f
+
+    /** Public so the Compose draw layer can compute each star's rendered size relative to the same
+     *  current-zoom limiting magnitude that decides which stars [build] includes at all -- see
+     *  [com.astrocompass.ui.components.SkyMap]'s `drawStar`. */
+    fun starMagnitudeLimitFor(fieldOfViewDegrees: Double): Float {
+        val raw = STAR_CATALOG_MAGNITUDE_CEILING - STAR_LOG_SLOPE * ln(fieldOfViewDegrees / STAR_CEILING_FOV).toFloat()
+        return raw.coerceIn(STAR_MAGNITUDE_FLOOR, STAR_CATALOG_MAGNITUDE_CEILING)
     }
 
     private fun effectiveMagnitude(obj: SkyObject): Float = when {

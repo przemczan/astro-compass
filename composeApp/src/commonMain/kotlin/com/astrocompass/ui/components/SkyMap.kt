@@ -14,6 +14,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathEffect
@@ -69,16 +70,56 @@ private data class ObjectPhoto(
 
 private val STAR_LABEL_COUNT = 12
 private val TOUCH_TARGET_RADIUS_DP = 22.dp
-private val MIN_STAR_RADIUS_PX = 1.5f
-private val MAX_STAR_RADIUS_PX = 7f
+/** A star's rendered core radius grows linearly with how far its magnitude sits above the
+ *  *current zoom's* limiting magnitude ([SkyMapScene.starMagnitudeLimitFor]) -- not with its
+ *  absolute magnitude. This is deliberate, matching how Stellarium renders point sources: a star
+ *  right at the current visibility threshold always draws at [MIN_STAR_RADIUS_PX] regardless of
+ *  what that threshold happens to be, and grows the same way whether it gets zoomed in on (the
+ *  threshold itself reaches fainter as field of view narrows, so a fixed star's distance above it
+ *  grows) or is simply an intrinsically brighter star at the same zoom -- one linear formula
+ *  handles both, so every star scales with zoom identically rather than each having its own curve. */
+private const val MIN_STAR_RADIUS_PX = 0.6f
+private const val MAX_STAR_RADIUS_PX = 20f
+private const val STAR_RADIUS_PER_MAGNITUDE_PX = 2.0f
+private const val HALO_RADIUS_MULTIPLIER = 5f
+private const val MAX_STAR_HALO_RADIUS_PX = 80f
+/** A star's halo only starts appearing once its own core radius (already zoom-scaled, see above)
+ *  clears this many pixels -- an *apparent size* threshold, not a magnitude one, so it's the same
+ *  rule at every zoom: a star that's still a bare point stays a bare point, and one that's grown
+ *  enough to look like more than a point starts glowing, regardless of why it grew that large. */
+private const val HALO_MIN_CORE_RADIUS_PX = 2f
+/** The halo's own peak opacity ramps from 0 right at [HALO_MIN_CORE_RADIUS_PX] up to
+ *  [HALO_PEAK_ALPHA] by [MAX_STAR_RADIUS_PX] -- a star that's just barely earned a halo gets a
+ *  faint one, not the same intensity as Sirius, so halo strength (not just reach) tracks how far
+ *  above the visibility threshold a star sits, same as its size does. */
+private const val HALO_PEAK_ALPHA = 0.45f
 /** Passed to [drawStar] for planets/Sun/Moon -- brighter than any real star magnitude, so they
- *  always draw at [MAX_STAR_RADIUS_PX] regardless of the (nonexistent) real magnitude clamp. */
+ *  always draw at [MAX_STAR_RADIUS_PX]/[MAX_STAR_HALO_RADIUS_PX] regardless of the current zoom's
+ *  limiting magnitude. */
 private const val PLANET_DRAW_MAGNITUDE = -10f
+/** Solar system bodies draw at half the size stars can reach -- see [drawStar]'s `sizeMultiplier`.
+ *  Stars are unaffected; this only scales the always-maxed-out planet/Sun/Moon case. */
+private const val SOLAR_SYSTEM_SIZE_MULTIPLIER = 0.5f
 private val DSO_GLYPH_RADIUS_DP = 6.dp
 /** Below this on-screen size a Messier object's bundled photo would just be a smudge -- the dot
  *  glyph reads better and is cheaper to draw, so the photo only takes over once real apparent
  *  size at the current zoom earns it. First-pass tuning value, not derived from anything. */
 private const val MIN_PHOTO_DISPLAY_PX = 40f
+/** A schematic DSO glyph (the plain dot/oval/square/diamond fallback, not a bundled photo) fades
+ *  in as the object's own real apparent size -- majorAxisArcmin converted to pixels at the current
+ *  zoom, same conversion [SkyMap]'s objectPhotos map uses -- clears this many pixels, and is fully
+ *  opaque by [MIN_DSO_APPARENT_RADIUS_PX] + [DSO_SIZE_FADE_RANGE_PX]. Most catalog DSOs are a small
+ *  fraction of a screen pixel across at any zoom a wide field of view shows, so gating by real
+ *  apparent size -- not just magnitude -- declutters a wide view down to the objects actually big
+ *  enough to matter, opening up gradually as you zoom in, the same way [drawStar] fades a star in
+ *  near its own magnitude threshold. Objects with no known size ([DeepSkyObject.majorAxisArcmin]
+ *  is `NaN` for about 10% of dso.bin) skip this gate entirely and keep the old magnitude-only
+ *  behavior -- there's no size data to gate on. Measured against the real bundled catalog: this
+ *  cuts the DSO count roughly 60-70% at field of view 40-60 degrees (the worst-cluttered range)
+ *  while barely touching field of view 10 degrees and narrower, where survivors are already big
+ *  enough that most render above [MIN_DSO_APPARENT_RADIUS_PX] anyway. */
+private const val MIN_DSO_APPARENT_RADIUS_PX = 0.4f
+private const val DSO_SIZE_FADE_RANGE_PX = 0.4f
 private val MARKER_RADIUS_DP = 10.dp
 private val HORIZON_SAMPLE_COUNT = 96
 private const val HORIZON_STROKE_WIDTH = 4f
@@ -213,7 +254,13 @@ fun SkyMap(
                         y = (-(offset.y - center.y) / ppu).toDouble(),
                     )
                     val touchRadiusUnits = TOUCH_TARGET_RADIUS_DP.toPx() / ppu
-                    SkyMapScene.nearest(currentScene.value, tapPoint, touchRadiusUnits.toDouble())
+                    // Restricted to objects big enough to actually be seen at the current zoom (see
+                    // isSelectable) -- otherwise a barely-visible faint star sitting near a genuinely
+                    // prominent one could win "nearest" purely by geometric luck, making the prominent
+                    // one hard to tap until you zoom in past the faint one's own reveal point anyway.
+                    val starMagnitudeLimit = SkyMapScene.starMagnitudeLimitFor(currentViewport.value.fieldOfViewDegrees)
+                    val selectableScene = currentScene.value.filter { isSelectable(it.skyObject, starMagnitudeLimit, ppu) }
+                    SkyMapScene.nearest(selectableScene, tapPoint, touchRadiusUnits.toDouble())
                         ?.let { select(it.skyObject) }
                 }
             },
@@ -221,6 +268,7 @@ fun SkyMap(
         drawRect(backgroundColor)
         if (pixelsPerUnit <= 0f) return@Canvas
 
+        val currentStarMagnitudeLimit = SkyMapScene.starMagnitudeLimitFor(viewport.fieldOfViewDegrees)
         val center = Offset(this.size.width / 2f, this.size.height / 2f)
         fun toScreen(point: PlanePoint): Offset = Offset(
             x = center.x + (point.x * pixelsPerUnit).toFloat(),
@@ -253,18 +301,28 @@ fun SkyMap(
             marker.label?.let { label -> drawObjectLabel(screenPoint, label, textMeasurer, labelStyle) }
         }
 
+        // Tracks which DeepSkyObjects actually drew something (photo, or a schematic glyph that
+        // cleared MIN_DSO_APPARENT_RADIUS_PX) -- the label pass below must agree, or a bright-but-
+        // tiny DSO that the size gate hid would still get a name floating over empty sky.
+        val visibleDsoIds = mutableSetOf<String>()
         for (projected in scene) {
             val screenPoint = toScreen(projected.point)
             val isHighlighted = highlightedIds.contains(projected.skyObject.id)
             val photo = objectPhotos[projected.skyObject.id]
             when (val obj = projected.skyObject) {
-                is StarObject -> drawStar(screenPoint, obj.magnitude, starColor, isHighlighted, highlightColor)
+                is StarObject -> drawStar(screenPoint, obj.magnitude, starColor, currentStarMagnitudeLimit, projected.alpha, isHighlighted, highlightColor)
                 is DeepSkyObject -> if (photo != null) {
-                    drawObjectPhoto(screenPoint, photo.painter, photo.targetLongestEdgePx, photo.rotationDegrees)
+                    drawObjectPhoto(screenPoint, photo.painter, photo.targetLongestEdgePx, photo.rotationDegrees, projected.alpha)
+                    visibleDsoIds += obj.id
                 } else {
-                    drawDeepSkyObject(screenPoint, obj.type, dsoColor, isHighlighted, highlightColor)
+                    val apparentRadiusPx = obj.apparentRadiusPx(pixelsPerUnit)
+                    val drew = drawDeepSkyObject(screenPoint, obj.type, dsoColor, isHighlighted, highlightColor, projected.alpha, apparentRadiusPx)
+                    if (drew) visibleDsoIds += obj.id
                 }
-                is SolarSystemObject -> drawStar(screenPoint, PLANET_DRAW_MAGNITUDE, planetColor, isHighlighted, highlightColor)
+                is SolarSystemObject -> drawStar(
+                    screenPoint, PLANET_DRAW_MAGNITUDE, planetColor, currentStarMagnitudeLimit, projected.alpha,
+                    isHighlighted, highlightColor, sizeMultiplier = SOLAR_SYSTEM_SIZE_MULTIPLIER,
+                )
             }
         }
 
@@ -272,6 +330,7 @@ fun SkyMap(
         // have no real magnitude to rank by -- see SkyMapScene's SOLAR_SYSTEM_BODY_SENTINEL).
         val labeled = scene
             .filter { !it.skyObject.magnitude.isNaN() }
+            .filter { it.skyObject !is DeepSkyObject || it.skyObject.id in visibleDsoIds }
             .sortedBy { it.skyObject.magnitude }
             .take(STAR_LABEL_COUNT) +
             scene.filter { highlightedIds.contains(it.skyObject.id) || it.skyObject is SolarSystemObject }
@@ -385,35 +444,123 @@ private fun DrawScope.drawCardinalPoints(
     }
 }
 
+/** Draws a star (or, via [PLANET_DRAW_MAGNITUDE], a planet/Sun/Moon) as a small solid core plus,
+ *  once it's grown large enough (see [HALO_MIN_CORE_RADIUS_PX]), a soft radial-gradient halo --
+ *  like Stellarium's point-source rendering. [currentMagnitudeLimit] (see
+ *  [SkyMapScene.starMagnitudeLimitFor]) is the current zoom's limiting magnitude, computed once per
+ *  draw and shared by every star so all of them scale with zoom the same way -- see
+ *  [MIN_STAR_RADIUS_PX]'s doc comment. [alpha] (see [ProjectedObject.alpha]) fades the whole star
+ *  in smoothly as it crosses that limit rather than popping in solid. */
+/** The same magnitude-above-limit-to-radius formula [drawStar] draws with -- shared with tap
+ *  hit-testing (see [isSelectable]) so "how big does this star actually look" is computed exactly
+ *  once, not re-derived a second time and risk drifting out of sync with what's on screen. */
+private fun starCoreRadius(magnitude: Float, currentMagnitudeLimit: Float): Float {
+    if (magnitude.isNaN()) return MAX_STAR_RADIUS_PX
+    val magnitudeAboveLimit = (currentMagnitudeLimit - magnitude).coerceAtLeast(0f)
+    return (MIN_STAR_RADIUS_PX + STAR_RADIUS_PER_MAGNITUDE_PX * magnitudeAboveLimit).coerceAtMost(MAX_STAR_RADIUS_PX)
+}
+
 private fun DrawScope.drawStar(
     center: Offset,
     magnitude: Float,
     color: Color,
+    currentMagnitudeLimit: Float,
+    alpha: Float,
     isHighlighted: Boolean,
     highlightColor: Color,
+    sizeMultiplier: Float = 1f,
 ) {
-    val radius = if (magnitude.isNaN()) {
-        (MIN_STAR_RADIUS_PX + MAX_STAR_RADIUS_PX) / 2f
-    } else {
-        (MAX_STAR_RADIUS_PX - magnitude * 0.9f).coerceIn(MIN_STAR_RADIUS_PX, MAX_STAR_RADIUS_PX)
+    val baseCoreRadius = starCoreRadius(magnitude, currentMagnitudeLimit)
+    // Applied after every other computation (including the MAX_STAR_RADIUS_PX clamp above), not
+    // folded into the formula itself -- a planet/Sun/Moon always sits at that clamp regardless (see
+    // PLANET_DRAW_MAGNITUDE), so scaling anything upstream of it would have no effect at all.
+    val coreRadius = baseCoreRadius * sizeMultiplier
+    val haloRadius = (baseCoreRadius * HALO_RADIUS_MULTIPLIER).coerceAtMost(MAX_STAR_HALO_RADIUS_PX) * sizeMultiplier
+    val drawColor = color.copy(alpha = color.alpha * alpha)
+
+    if (baseCoreRadius >= HALO_MIN_CORE_RADIUS_PX) {
+        // Keyed off baseCoreRadius (true brightness), not the sizeMultiplier-scaled coreRadius --
+        // a planet's halo should stay at full intensity even though its whole size is scaled down,
+        // not read as dimmer just because it's smaller on screen.
+        val haloAlphaT = ((baseCoreRadius - HALO_MIN_CORE_RADIUS_PX) / (MAX_STAR_RADIUS_PX - HALO_MIN_CORE_RADIUS_PX)).coerceIn(0f, 1f)
+        drawCircle(
+            brush = Brush.radialGradient(
+                colors = listOf(drawColor.copy(alpha = drawColor.alpha * HALO_PEAK_ALPHA * haloAlphaT), drawColor.copy(alpha = 0f)),
+                center = center,
+                radius = haloRadius,
+            ),
+            radius = haloRadius,
+            center = center,
+        )
     }
+    drawCircle(drawColor, radius = coreRadius, center = center)
     if (isHighlighted) {
-        drawCircle(highlightColor, radius = radius + 6f, center = center, style = Stroke(width = 2f))
+        // Drawn last, sized off whichever of the core/halo reaches further -- a halo painted after
+        // the ring (the original draw order) would wash out a bright star's ring under its own glow.
+        drawCircle(
+            highlightColor.copy(alpha = highlightColor.alpha * alpha),
+            radius = max(coreRadius, haloRadius) + 6f,
+            center = center,
+            style = Stroke(width = 2f),
+        )
     }
-    drawCircle(color, radius = radius, center = center)
 }
 
+/** [DeepSkyObject.majorAxisArcmin] converted to an on-screen radius at the current zoom -- same
+ *  conversion [SkyMap]'s objectPhotos map uses -- or null if OpenNGC has no size measurement for
+ *  this object. */
+private fun DeepSkyObject.apparentRadiusPx(pixelsPerUnit: Float): Float? {
+    if (majorAxisArcmin.isNaN()) return null
+    return (Angle.ofDegrees(majorAxisArcmin / 60.0 / 2.0).radians * pixelsPerUnit).toFloat()
+}
+
+/** 1 (no gating) for an object with no known size; otherwise ramps 0 to 1 as [apparentRadiusPx]
+ *  crosses [MIN_DSO_APPARENT_RADIUS_PX] over [DSO_SIZE_FADE_RANGE_PX] -- see that constant's doc
+ *  comment. */
+private fun dsoSizeAlpha(apparentRadiusPx: Float?): Float =
+    if (apparentRadiusPx == null) {
+        1f
+    } else {
+        ((apparentRadiusPx - MIN_DSO_APPARENT_RADIUS_PX) / DSO_SIZE_FADE_RANGE_PX).coerceIn(0f, 1f)
+    }
+
+/** Whether [obj] currently renders large enough to be a fair tap target -- reusing the exact size
+ *  math [drawStar]/[dsoSizeAlpha] use to draw it, not a separate, looser touch radius. Without this,
+ *  a barely-visible mag-8 star sitting near a genuinely prominent one competes equally for "nearest
+ *  tap" purely by geometric luck, making the prominent object hard to select until the faint one
+ *  grows past this same bar by zooming in -- which is backwards from what a tap should feel like.
+ *  [HALO_MIN_CORE_RADIUS_PX] doubles as the bar here: it's already this codebase's answer to "how
+ *  big before a star reads as more than a bare point," which is the same question a tap target
+ *  needs answered. DSOs reuse [dsoSizeAlpha] directly -- an object [SkyMap] didn't actually draw
+ *  (alpha 0) obviously shouldn't be tappable either. */
+private fun isSelectable(obj: SkyObject, currentStarMagnitudeLimit: Float, pixelsPerUnit: Float): Boolean = when (obj) {
+    is StarObject -> starCoreRadius(obj.magnitude, currentStarMagnitudeLimit) >= HALO_MIN_CORE_RADIUS_PX
+    is SolarSystemObject -> starCoreRadius(PLANET_DRAW_MAGNITUDE, currentStarMagnitudeLimit) >= HALO_MIN_CORE_RADIUS_PX
+    is DeepSkyObject -> dsoSizeAlpha(obj.apparentRadiusPx(pixelsPerUnit)) > 0f
+}
+
+/** Draws a DSO's schematic dot/oval/square/diamond glyph, fading in by real apparent size (see
+ *  [MIN_DSO_APPARENT_RADIUS_PX]) unless [isHighlighted] -- a selected/searched-for object stays
+ *  visible regardless of size, the same way a [SkyMapMarker] is never limited by brightness either.
+ *  Returns whether anything was actually drawn, so the caller can keep its label list in sync (see
+ *  the `visibleDsoIds` comment at the call site). */
 private fun DrawScope.drawDeepSkyObject(
     center: Offset,
     type: SkyObjectType,
-    color: Color,
+    baseColor: Color,
     isHighlighted: Boolean,
     highlightColor: Color,
-) {
-    val radius = DSO_GLYPH_RADIUS_DP.toPx()
+    alpha: Float,
+    apparentRadiusPx: Float?,
+): Boolean {
+    val sizeAlpha = if (isHighlighted) 1f else dsoSizeAlpha(apparentRadiusPx)
+    if (sizeAlpha <= 0f) return false
+
+    val radius = if (apparentRadiusPx == null) DSO_GLYPH_RADIUS_DP.toPx() else max(DSO_GLYPH_RADIUS_DP.toPx(), apparentRadiusPx)
+    val color = baseColor.copy(alpha = baseColor.alpha * alpha * sizeAlpha)
     val stroke = Stroke(width = 2f, pathEffect = dashEffectFor(type))
     if (isHighlighted) {
-        drawCircle(highlightColor, radius = radius + 6f, center = center, style = Stroke(width = 2f))
+        drawCircle(highlightColor.copy(alpha = highlightColor.alpha * alpha), radius = radius + 6f, center = center, style = Stroke(width = 2f))
     }
     when (glyphFor(type)) {
         DsoGlyph.ELLIPSE -> drawOval(
@@ -440,6 +587,7 @@ private fun DrawScope.drawDeepSkyObject(
             drawPath(path, color, style = stroke)
         }
     }
+    return true
 }
 
 /** Draws a bundled object photo centered at [center], its longest edge scaled to
@@ -447,7 +595,7 @@ private fun DrawScope.drawDeepSkyObject(
  *  catalog's major/minor axis ratio), since the photo's framing rarely matches that ratio exactly
  *  and stretching would visibly distort it -- then rotated clockwise by [rotationDegrees] about
  *  its own center to align with true north on screen. */
-private fun DrawScope.drawObjectPhoto(center: Offset, painter: Painter, targetLongestEdgePx: Float, rotationDegrees: Float) {
+private fun DrawScope.drawObjectPhoto(center: Offset, painter: Painter, targetLongestEdgePx: Float, rotationDegrees: Float, alpha: Float) {
     val intrinsic = painter.intrinsicSize
     if (intrinsic.width <= 0f || intrinsic.height <= 0f) return
     val scale = targetLongestEdgePx / max(intrinsic.width, intrinsic.height)
@@ -455,7 +603,7 @@ private fun DrawScope.drawObjectPhoto(center: Offset, painter: Painter, targetLo
     val drawHeight = intrinsic.height * scale
     rotate(rotationDegrees, pivot = center) {
         translate(left = center.x - drawWidth / 2f, top = center.y - drawHeight / 2f) {
-            with(painter) { draw(Size(drawWidth, drawHeight)) }
+            with(painter) { draw(Size(drawWidth, drawHeight), alpha = alpha) }
         }
     }
 }

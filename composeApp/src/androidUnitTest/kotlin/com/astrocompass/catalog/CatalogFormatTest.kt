@@ -26,7 +26,7 @@ class CatalogFormatTest {
     fun decodeStars_readsTheCommittedBlob() {
         val stars = CatalogFormat.decodeStars(readResource("stars.bin"))
 
-        assertEquals(3268, stars.size)
+        assertEquals(61816, stars.size)
 
         val vega = stars.single { it.properName == "Vega" }
         assertEquals(91262, vega.hip)
