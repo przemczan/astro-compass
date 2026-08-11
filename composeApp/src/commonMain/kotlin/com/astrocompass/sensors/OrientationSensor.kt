@@ -5,9 +5,8 @@ import kotlinx.coroutines.flow.StateFlow
 
 /**
  * Live device orientation. Platform-specific implementations are plain classes (not
- * `expect`/`actual`) so the Android one can take a `Context` constructor parameter, matching
- * lightnet-mobile's `ServiceDiscovery` pattern: `MainActivity` constructs the platform instance
- * and injects it into common code.
+ * `expect`/`actual`) so the Android one can take a `Context` constructor parameter:
+ * `MainActivity` constructs the platform instance and injects it into common code.
  */
 interface OrientationSensor {
     val capabilities: SensorCapabilities

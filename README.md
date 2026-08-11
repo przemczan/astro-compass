@@ -61,9 +61,8 @@ commonMain/
 └── ui/             Compose screens: Search, Guidance, Alignment, Settings
 ```
 
-Platform-specific code is minimal and injected via plain interfaces (not `expect`/`actual`),
-matching lightnet-mobile's `ServiceDiscovery` pattern — `MainActivity` builds the Android
-implementations and hands them to `AppContainer`:
+Platform-specific code is minimal and injected via plain interfaces (not `expect`/`actual`) —
+`MainActivity` builds the Android implementations and hands them to `AppContainer`:
 
 - `androidMain` — `AndroidOrientationSensor` (`SensorManager`), `AndroidLocationProvider`
   (`LocationManager`, no Play Services)

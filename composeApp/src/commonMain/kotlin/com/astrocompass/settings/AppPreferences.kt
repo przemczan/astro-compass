@@ -10,9 +10,9 @@ import com.astrocompass.ui.theme.AppTheme
 import com.russhwolf.settings.Settings
 import kotlinx.coroutines.flow.MutableStateFlow
 
-/** All user-facing and Advanced-section settings, backed by [Settings]. Follows the same
- *  hand-rolled reactive-preference pattern as lightnet-mobile's `DemoSettings`: a
- *  [MutableStateFlow] seeded from storage, with a setter that updates both the flow and storage. */
+/** All user-facing and Advanced-section settings, backed by [Settings]. Hand-rolled
+ *  reactive-preference pattern: a [MutableStateFlow] seeded from storage, with a setter that
+ *  updates both the flow and storage. */
 class AppPreferences(private val settings: Settings) {
 
     val telescopeAxis = MutableStateFlow(

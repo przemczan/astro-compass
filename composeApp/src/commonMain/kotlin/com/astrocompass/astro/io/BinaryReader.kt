@@ -2,7 +2,7 @@ package com.astrocompass.astro.io
 
 /**
  * Little-endian reader for the catalog blobs. `java.nio.ByteBuffer` is not available in
- * `commonMain`, so this reads bytes by hand — same constraint as lightnet-mobile's `ByteReader`.
+ * `commonMain`, so this reads bytes by hand.
  */
 class BinaryReader(private val bytes: ByteArray) {
     private var position = 0

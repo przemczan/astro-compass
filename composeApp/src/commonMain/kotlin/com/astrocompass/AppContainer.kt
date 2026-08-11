@@ -60,9 +60,8 @@ private const val PLATE_SOLVE_TIMEOUT_MILLIS = 30_000L
  * Owns every long-lived service for the app's lifetime: sensor, location, catalog, preferences,
  * alignment. Built once by the platform entry point (`MainActivity` / `MainViewController`,
  * which supply the platform-specific [OrientationSensor]/[LocationProvider]/[Settings]) and
- * injected into [GuiderApp] -- same dependency-injection-by-constructor shape as
- * lightnet-mobile's `LightnetApp(serviceDiscovery, deviceRepository, httpClient)`, just with
- * more services, so it is grouped into one container instead of one parameter per service.
+ * injected into [GuiderApp] -- dependency injection by constructor, grouped into one container
+ * instead of one parameter per service.
  */
 class AppContainer(
     private val scope: CoroutineScope,

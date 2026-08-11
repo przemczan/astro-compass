@@ -60,7 +60,7 @@ All application code lives in `composeApp/src/`, a single Gradle module with thr
 | `sensors/` | `OrientationSensor` interface, `SensorCapabilities`/`defaultSource()` (auto-selection logic), `FakeOrientationSensor` |
 | `location/` | `ObserverLocation`, `LocationProvider` interface, `LocationResolver` (manual-override-wins-over-GPS), `MagneticDeclinationProvider` interface |
 | `guiding/` | `TelescopeAxis`, `AbsoluteReference` (+ `AlignmentAbsoluteReference`, `CompassAbsoluteReference`, `PrioritizedAbsoluteReference`), `PointingService` (sensor + reference fusion), `GuidanceCalculator`, `CurrentPosition` (target alt/az right now) |
-| `settings/` | `AppPreferences` — multiplatform-settings-backed, hand-rolled reactive (`MutableStateFlow` seeded from storage + setter that persists), same pattern as lightnet-mobile's `DemoSettings` |
+| `settings/` | `AppPreferences` — multiplatform-settings-backed, hand-rolled reactive (`MutableStateFlow` seeded from storage + setter that persists) |
 | `ui/screens/` | `SearchScreen`, `GuidanceScreen`, `AlignmentScreen`, `SettingsScreen` |
 | `ui/components/` | `ArrowIndicator`, `DeltaBar`, `SkyMap` (pannable/zoomable alt-az chart) |
 | `ui/skymap/` | `SkyMapViewport` (pan/zoom state), `SkyMapScene` (projection/culling/hit-test), `SkyMapDirectionCache` (per-tick catalog + constellation-line ENU snapshot) -- `SkyMap`'s non-Composable backing logic, kept separately unit-testable |
@@ -68,8 +68,7 @@ All application code lives in `composeApp/src/`, a single Gradle module with thr
 
 `AppContainer.kt` (top-level `com.astrocompass`) owns every long-lived service — sensor, location,
 catalog, preferences, alignment — built once by the platform entry point and injected into
-`GuiderApp`. Navigation is state-based in `App.kt` (booleans/nullable vars), no nav library —
-same convention as lightnet-mobile.
+`GuiderApp`. Navigation is state-based in `App.kt` (booleans/nullable vars), no nav library.
 
 ### The alignment model
 
@@ -129,8 +128,7 @@ which breaks a screen-projected arrow geometrically. Azimuth is always shown as 
 - **Platform services are plain interfaces, not `expect`/`actual` classes** — `OrientationSensor`
   and `LocationProvider` are common interfaces; `AndroidOrientationSensor`/`AndroidLocationProvider`
   (need a `Context` constructor param) and the iOS stubs implement them directly.
-  `MainActivity`/`MainViewController` construct the platform instance and inject it, same as
-  lightnet-mobile's `ServiceDiscovery`.
+  `MainActivity`/`MainViewController` construct the platform instance and inject it.
 - **The app selects the pointing sensor itself, by capability** (`SensorCapabilities.defaultSource()`)
   — this is never a user-facing setting on the main path. A manual override exists only in
   Settings → Advanced, applied once at `AndroidOrientationSensor` construction (takes effect on
@@ -155,7 +153,7 @@ Stock **Material 3** — prefer default component styling over custom looks.
   deliberate exception to theme-driven colors (hardcoded red-on-black, preserves dark adaptation
   at the eyepiece) — everywhere else, colors come from `MaterialTheme.colorScheme`.
 - **Action buttons** (Save / Sync / etc.) are wrap-content, centered — `Row(Modifier.fillMaxWidth(),
-  horizontalArrangement = Arrangement.Center)`, same convention as lightnet-mobile.
+  horizontalArrangement = Arrangement.Center)`.
 - **Location is a hard prerequisite** — Search, Guidance, and Alignment all gate on
   `LocationResolver.resolved` being non-null rather than rendering altitudes from a silent default.
 
