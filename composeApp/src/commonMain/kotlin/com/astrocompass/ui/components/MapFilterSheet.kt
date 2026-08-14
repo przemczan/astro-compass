@@ -48,8 +48,10 @@ fun MapFilterSheet(
     }
 }
 
+/** Internal (not private) so [com.astrocompass.ui.screens.NightWizardOptionsScreen] can reuse the
+ *  same toggle-row look for its own [MapObjectCategory] filter. */
 @Composable
-private fun FilterToggleRow(label: String, checked: Boolean, onCheckedChange: (Boolean) -> Unit) {
+internal fun FilterToggleRow(label: String, checked: Boolean, onCheckedChange: (Boolean) -> Unit) {
     Row(
         Modifier.fillMaxWidth()
             .clickable { onCheckedChange(!checked) }

@@ -29,12 +29,14 @@ fun ToolbarActionButton(
     label: String,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
+    enabled: Boolean = true,
     containerColor: Color? = null,
     contentColor: Color = LocalContentColor.current,
 ) {
+    val resolvedContentColor = if (enabled) contentColor else contentColor.copy(alpha = 0.38f)
     Column(
         modifier = modifier
-            .clickable(onClick = onClick)
+            .clickable(enabled = enabled, onClick = onClick)
             .padding(horizontal = 12.dp, vertical = 8.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
@@ -43,7 +45,7 @@ fun ToolbarActionButton(
         } else {
             Modifier
         }
-        Icon(icon, contentDescription = null, tint = contentColor, modifier = iconModifier)
-        Text(label, style = MaterialTheme.typography.labelSmall, color = contentColor)
+        Icon(icon, contentDescription = null, tint = resolvedContentColor, modifier = iconModifier)
+        Text(label, style = MaterialTheme.typography.labelSmall, color = resolvedContentColor)
     }
 }

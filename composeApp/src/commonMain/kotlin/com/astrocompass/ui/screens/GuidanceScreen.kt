@@ -14,11 +14,15 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.NavigateBefore
+import androidx.compose.material.icons.automirrored.filled.NavigateNext
 import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Explore
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Sync
+import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.BottomAppBar
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -43,6 +47,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
@@ -111,6 +116,13 @@ fun GuidanceScreen(
     onExitGuiding: () -> Unit,
     showObjectPhotos: Boolean,
     mapObjectFilter: MapObjectFilter,
+    // Night Wizard mode: non-null wizardProgress swaps the header/toolbar to walk through a fixed
+    // object list instead of today's single-target Platesolve/Sync/Align/Exit layout. `first` is
+    // the 1-based current index, `second` the total count.
+    wizardProgress: Pair<Int, Int>? = null,
+    onNextObject: () -> Unit = {},
+    onPreviousObject: () -> Unit = {},
+    onOpenWizardOptions: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val isAligned by pointingService.isAligned.collectAsState()
@@ -174,36 +186,87 @@ fun GuidanceScreen(
         topBar = {
             TopAppBar(
                 title = { Text(target.displayName) },
+                navigationIcon = {
+                    if (wizardProgress != null) {
+                        IconButton(onClick = onOpenWizardOptions) {
+                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back to Night Wizard options")
+                        }
+                    }
+                },
                 actions = {
                     IconButton(onClick = onOpenSettings) { Icon(Icons.Default.Settings, contentDescription = "Settings") }
                 },
             )
         },
         bottomBar = {
-            BottomAppBar {
-                Row(
-                    Modifier.fillMaxWidth().padding(horizontal = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Row(Modifier.weight(1f)) {
-                        if (showGuidanceActions) {
+            Column {
+                if (wizardProgress != null) {
+                    val (index, total) = wizardProgress
+                    Text(
+                        "$index / $total",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                    )
+                }
+                BottomAppBar {
+                    if (wizardProgress != null) {
+                        val (index, total) = wizardProgress
+                        Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                             ToolbarActionButton(
-                                icon = Icons.Default.CameraAlt,
-                                label = "Platesolve",
-                                onClick = { plateSolveRunId = (plateSolveRunId ?: 0) + 1 },
+                                icon = Icons.AutoMirrored.Filled.NavigateBefore,
+                                label = "Prev",
+                                enabled = index > 1,
+                                onClick = onPreviousObject,
+                                modifier = Modifier.weight(1f),
                             )
-                            when (activeReference.origin) {
-                                ReferenceOrigin.STAR_ALIGNMENT ->
-                                    ToolbarActionButton(icon = Icons.Default.Sync, label = "Sync Az", onClick = onSyncOnThisObject)
-                                ReferenceOrigin.COMPASS ->
-                                    ToolbarActionButton(icon = Icons.Default.Explore, label = "Align", onClick = onOpenAlignment)
+                            ToolbarActionButton(
+                                icon = Icons.AutoMirrored.Filled.NavigateNext,
+                                label = "Next",
+                                enabled = index < total,
+                                onClick = onNextObject,
+                                modifier = Modifier.weight(1f),
+                            )
+                            ToolbarActionButton(
+                                icon = Icons.Default.Tune,
+                                label = "Options",
+                                onClick = onOpenWizardOptions,
+                                modifier = Modifier.weight(1f),
+                            )
+                            ToolbarActionButton(
+                                icon = Icons.Default.Close,
+                                label = "Cancel",
+                                onClick = onExitGuiding,
+                                modifier = Modifier.weight(1f),
+                            )
+                        }
+                    } else {
+                        Row(
+                            Modifier.fillMaxWidth().padding(horizontal = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Row(Modifier.weight(1f)) {
+                                if (showGuidanceActions) {
+                                    ToolbarActionButton(
+                                        icon = Icons.Default.CameraAlt,
+                                        label = "Platesolve",
+                                        onClick = { plateSolveRunId = (plateSolveRunId ?: 0) + 1 },
+                                    )
+                                    when (activeReference.origin) {
+                                        ReferenceOrigin.STAR_ALIGNMENT ->
+                                            ToolbarActionButton(icon = Icons.Default.Sync, label = "Sync Az", onClick = onSyncOnThisObject)
+                                        ReferenceOrigin.COMPASS ->
+                                            ToolbarActionButton(icon = Icons.Default.Explore, label = "Align", onClick = onOpenAlignment)
+                                    }
+                                }
                             }
+                            if (showGuidanceActions) {
+                                VerticalDivider(Modifier.height(32.dp).padding(horizontal = 4.dp))
+                            }
+                            ToolbarActionButton(icon = Icons.Default.Close, label = "Exit", onClick = onExitGuiding)
                         }
                     }
-                    if (showGuidanceActions) {
-                        VerticalDivider(Modifier.height(32.dp).padding(horizontal = 4.dp))
-                    }
-                    ToolbarActionButton(icon = Icons.Default.Close, label = "Exit", onClick = onExitGuiding)
                 }
             }
         },

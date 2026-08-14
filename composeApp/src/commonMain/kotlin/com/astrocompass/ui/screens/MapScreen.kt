@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Explore
 import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material.icons.filled.Search
@@ -90,6 +91,7 @@ fun MapScreen(
     onOpenSearch: () -> Unit,
     onOpenSettings: () -> Unit,
     onOpenAlignment: () -> Unit,
+    onOpenNightWizard: () -> Unit,
     onExitApp: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -132,6 +134,7 @@ fun MapScreen(
                     containerColor = if (isStarAligned) null else MaterialTheme.colorScheme.primaryContainer,
                     contentColor = if (isStarAligned) LocalContentColor.current else MaterialTheme.colorScheme.onPrimaryContainer,
                 )
+                ToolbarActionButton(icon = Icons.Default.AutoAwesome, label = "Night wizard", onClick = onOpenNightWizard)
                 Spacer(Modifier.weight(1f))
             }
         },

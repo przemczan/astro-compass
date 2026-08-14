@@ -121,6 +121,39 @@ class AppPreferences(private val settings: Settings) {
         settings.putBoolean(KEY_SHOW_OTHER, filter.showOther)
     }
 
+    /** The Night Wizard's own type filter -- separate from [mapObjectFilter] since each screen's
+     *  filter is independently scoped (see [magnitudeLimit]'s doc comment for the same reasoning
+     *  applied to Search). Every category on by default. */
+    val nightWizardObjectFilter = MutableStateFlow(
+        MapObjectFilter(
+            showSolarSystem = settings.getBoolean(KEY_WIZARD_SHOW_SOLAR_SYSTEM, true),
+            showGalaxies = settings.getBoolean(KEY_WIZARD_SHOW_GALAXIES, true),
+            showNebulae = settings.getBoolean(KEY_WIZARD_SHOW_NEBULAE, true),
+            showClusters = settings.getBoolean(KEY_WIZARD_SHOW_CLUSTERS, true),
+            showOther = settings.getBoolean(KEY_WIZARD_SHOW_OTHER, true),
+        )
+    )
+    fun setNightWizardObjectFilter(filter: MapObjectFilter) {
+        nightWizardObjectFilter.value = filter
+        settings.putBoolean(KEY_WIZARD_SHOW_SOLAR_SYSTEM, filter.showSolarSystem)
+        settings.putBoolean(KEY_WIZARD_SHOW_GALAXIES, filter.showGalaxies)
+        settings.putBoolean(KEY_WIZARD_SHOW_NEBULAE, filter.showNebulae)
+        settings.putBoolean(KEY_WIZARD_SHOW_CLUSTERS, filter.showClusters)
+        settings.putBoolean(KEY_WIZARD_SHOW_OTHER, filter.showOther)
+    }
+
+    val nightWizardMagnitudeLimit = MutableStateFlow(settings.getFloat(KEY_WIZARD_MAGNITUDE_LIMIT, DEFAULT_WIZARD_MAGNITUDE_LIMIT))
+    fun setNightWizardMagnitudeLimit(limit: Float) {
+        nightWizardMagnitudeLimit.value = limit
+        settings.putFloat(KEY_WIZARD_MAGNITUDE_LIMIT, limit)
+    }
+
+    val nightWizardMinAltitudeDegrees = MutableStateFlow(settings.getFloat(KEY_WIZARD_MIN_ALTITUDE, DEFAULT_WIZARD_MIN_ALTITUDE_DEGREES))
+    fun setNightWizardMinAltitudeDegrees(degrees: Float) {
+        nightWizardMinAltitudeDegrees.value = degrees
+        settings.putFloat(KEY_WIZARD_MIN_ALTITUDE, degrees)
+    }
+
     private companion object {
         const val KEY_TELESCOPE_AXIS = "telescope_axis"
         const val KEY_TOLERANCE = "on_target_tolerance_degrees"
@@ -138,8 +171,17 @@ class AppPreferences(private val settings: Settings) {
         const val KEY_SHOW_NEBULAE = "show_nebulae"
         const val KEY_SHOW_CLUSTERS = "show_clusters"
         const val KEY_SHOW_OTHER = "show_other"
+        const val KEY_WIZARD_SHOW_SOLAR_SYSTEM = "wizard_show_solar_system"
+        const val KEY_WIZARD_SHOW_GALAXIES = "wizard_show_galaxies"
+        const val KEY_WIZARD_SHOW_NEBULAE = "wizard_show_nebulae"
+        const val KEY_WIZARD_SHOW_CLUSTERS = "wizard_show_clusters"
+        const val KEY_WIZARD_SHOW_OTHER = "wizard_show_other"
+        const val KEY_WIZARD_MAGNITUDE_LIMIT = "wizard_magnitude_limit"
+        const val KEY_WIZARD_MIN_ALTITUDE = "wizard_min_altitude_degrees"
 
         const val DEFAULT_TOLERANCE_DEGREES = 0.5
         const val DEFAULT_MAGNITUDE_LIMIT = 13f
+        const val DEFAULT_WIZARD_MAGNITUDE_LIMIT = 9f
+        const val DEFAULT_WIZARD_MIN_ALTITUDE_DEGREES = 20f
     }
 }
