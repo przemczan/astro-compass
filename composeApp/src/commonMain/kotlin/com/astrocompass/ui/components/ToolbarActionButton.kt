@@ -2,8 +2,10 @@ package com.astrocompass.ui.components
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LocalContentColor
@@ -17,12 +19,23 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.dp
 
+/** Icon (24.dp, Material's default) plus [BADGE_PADDING] on every side, whether or not a badge
+ *  is actually drawn -- reserving the badged variant's full footprint for every icon is what
+ *  keeps every button's label starting at the same height, see [ToolbarActionButton]. */
+private val ICON_SLOT_SIZE = 36.dp
+private val BADGE_PADDING = 6.dp
+
 /** A toolbar action rendered as a stacked icon + label -- [androidx.compose.material3.BottomAppBar]'s
  *  usual content is bare [androidx.compose.material3.IconButton]s, which carry no visible label. The
  *  icon's own content description is left null since the adjacent [Text] already names the action.
  *  [containerColor], when set, draws a filled pill behind the icon (matching Material's selected-nav-
  *  item look) so an action that still needs doing -- not just labeled, but visually flagged -- stands
- *  out from the toolbar's other, already-available actions. */
+ *  out from the toolbar's other, already-available actions.
+ *
+ *  The icon always sits in a fixed-size [ICON_SLOT_SIZE] box, badged or not: an unbadged icon is
+ *  smaller than a badged one (no circle background/padding), so without this every unbadged
+ *  button's label would sit higher than a badged button's -- a per-button height difference, not
+ *  a per-row one, so it can't be fixed by aligning the row itself. */
 @Composable
 fun ToolbarActionButton(
     icon: ImageVector,
@@ -40,12 +53,14 @@ fun ToolbarActionButton(
             .padding(horizontal = 12.dp, vertical = 8.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        val iconModifier = if (containerColor != null) {
-            Modifier.clip(CircleShape).background(containerColor).padding(6.dp)
-        } else {
-            Modifier
+        Box(modifier = Modifier.size(ICON_SLOT_SIZE), contentAlignment = Alignment.Center) {
+            val iconModifier = if (containerColor != null) {
+                Modifier.clip(CircleShape).background(containerColor).padding(BADGE_PADDING)
+            } else {
+                Modifier
+            }
+            Icon(icon, contentDescription = null, tint = resolvedContentColor, modifier = iconModifier)
         }
-        Icon(icon, contentDescription = null, tint = resolvedContentColor, modifier = iconModifier)
         Text(label, style = MaterialTheme.typography.labelSmall, color = resolvedContentColor)
     }
 }

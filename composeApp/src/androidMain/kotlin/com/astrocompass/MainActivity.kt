@@ -12,6 +12,8 @@ import com.astrocompass.sensors.SensorSource
 import com.astrocompass.location.AndroidLocationProvider
 import com.astrocompass.location.AndroidMagneticDeclinationProvider
 import com.astrocompass.platesolve.AndroidCameraCapture
+import com.astrocompass.telescope.AndroidBluetoothTelescopeTransport
+import com.astrocompass.telescope.bondedTelescopeCandidates
 import com.russhwolf.settings.SharedPreferencesSettings
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -47,6 +49,9 @@ class MainActivity : ComponentActivity() {
             cameraCapture = AndroidCameraCapture(applicationContext),
             magneticDeclinationProvider = AndroidMagneticDeclinationProvider(),
             settings = settings,
+            bluetoothTransportFactory = { address -> AndroidBluetoothTelescopeTransport(applicationContext, address) },
+            supportsBluetoothTelescope = true,
+            bondedBluetoothDevicesProvider = { bondedTelescopeCandidates(applicationContext) },
         )
 
         requestPermissions.launch(
@@ -54,6 +59,7 @@ class MainActivity : ComponentActivity() {
                 Manifest.permission.ACCESS_FINE_LOCATION,
                 Manifest.permission.ACCESS_COARSE_LOCATION,
                 Manifest.permission.CAMERA,
+                Manifest.permission.BLUETOOTH_CONNECT,
             ),
         )
 

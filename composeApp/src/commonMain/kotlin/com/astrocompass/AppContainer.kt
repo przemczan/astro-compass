@@ -24,6 +24,8 @@ import com.astrocompass.guiding.CompassAbsoluteReference
 import com.astrocompass.guiding.PlateSolveAttempt
 import com.astrocompass.guiding.PointingService
 import com.astrocompass.guiding.PrioritizedAbsoluteReference
+import com.astrocompass.guiding.PrioritizedPointingSource
+import com.astrocompass.guiding.SkyPointingSource
 import com.astrocompass.guiding.currentHorizontal
 import com.astrocompass.location.LocationProvider
 import com.astrocompass.location.LocationResolver
@@ -36,6 +38,12 @@ import com.astrocompass.platesolve.PlateSolver
 import com.astrocompass.platesolve.ReferenceStar
 import com.astrocompass.sensors.OrientationSensor
 import com.astrocompass.settings.AppPreferences
+import com.astrocompass.telescope.Lx200TelescopeConnection
+import com.astrocompass.telescope.TcpTelescopeTransport
+import com.astrocompass.telescope.TelescopeConnection
+import com.astrocompass.telescope.TelescopeEndpoint
+import com.astrocompass.telescope.TelescopePointingSource
+import com.astrocompass.telescope.TelescopeTransport
 import com.russhwolf.settings.Settings
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -70,6 +78,13 @@ class AppContainer(
     val cameraCapture: CameraCapture,
     magneticDeclinationProvider: MagneticDeclinationProvider,
     settings: Settings,
+    tcpTransportFactory: (host: String, port: Int) -> TelescopeTransport = ::TcpTelescopeTransport,
+    bluetoothTransportFactory: (address: String) -> TelescopeTransport,
+    /** True only where Bluetooth Classic SPP is a real platform capability (Android) -- lets
+     *  [com.astrocompass.ui.screens.TelescopeScreen] hide the whole Bluetooth section on iOS
+     *  rather than showing an always-empty paired-device list. */
+    val supportsBluetoothTelescope: Boolean = false,
+    private val bondedBluetoothDevicesProvider: () -> List<Pair<String, String>> = { emptyList() },
 ) {
     val preferences = AppPreferences(settings)
     val catalogRepository = CatalogRepository()
@@ -90,6 +105,17 @@ class AppContainer(
         PrioritizedAbsoluteReference(scope, preferred = alignmentReference, fallback = compassReference)
 
     val pointingService = PointingService(scope, orientationSensor, absoluteReference, preferences.telescopeAxis)
+
+    val telescopeConnection: TelescopeConnection =
+        Lx200TelescopeConnection(scope, tcpTransportFactory, bluetoothTransportFactory)
+
+    private val telescopePointingSource = TelescopePointingSource(scope, telescopeConnection, locationResolver.resolved)
+
+    /** A connected, actively-reporting mount wins outright over the phone-based [pointingService]
+     *  -- see [PrioritizedPointingSource]. Screens should consume this rather than
+     *  [pointingService] directly so a telescope connection transparently takes over. */
+    val activePointingSource: SkyPointingSource =
+        PrioritizedPointingSource(scope, preferred = telescopePointingSource, fallback = pointingService)
 
     init {
         scope.launch { catalogRepository.load() }
@@ -232,4 +258,14 @@ class AppContainer(
     fun applyPlateSolve(attempt: PlateSolveAttempt) {
         saveAlignment(attempt.correctedModel)
     }
+
+    suspend fun connectTelescope(endpoint: TelescopeEndpoint) = telescopeConnection.connect(endpoint)
+
+    suspend fun disconnectTelescope() = telescopeConnection.disconnect()
+
+    /** Re-queried on every call rather than cached -- the paired-device list can change any time
+     *  the user visits Android's own Bluetooth settings, and [com.astrocompass.ui.screens.TelescopeScreen]
+     *  is freshly composed each time it's navigated to, so this is naturally fresh with no extra
+     *  refresh mechanism needed. */
+    fun bondedBluetoothDevices(): List<Pair<String, String>> = bondedBluetoothDevicesProvider()
 }

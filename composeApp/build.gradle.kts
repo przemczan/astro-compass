@@ -44,6 +44,7 @@ kotlin {
             implementation(libs.kotlinx.coroutines.core)
             implementation(libs.kotlinx.datetime)
             implementation(libs.kotlinx.serialization.json)
+            implementation(libs.ktor.network)
             implementation(libs.multiplatform.settings)
             implementation(compose.materialIconsExtended)
         }

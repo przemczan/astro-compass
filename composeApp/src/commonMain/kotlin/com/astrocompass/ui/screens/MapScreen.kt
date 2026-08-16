@@ -16,6 +16,7 @@ import androidx.compose.material.icons.filled.Explore
 import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.SettingsInputAntenna
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material3.BottomAppBar
 import androidx.compose.material3.Button
@@ -92,6 +93,7 @@ fun MapScreen(
     onOpenSettings: () -> Unit,
     onOpenAlignment: () -> Unit,
     onOpenNightWizard: () -> Unit,
+    onOpenTelescope: () -> Unit,
     onExitApp: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -135,6 +137,7 @@ fun MapScreen(
                     contentColor = if (isStarAligned) LocalContentColor.current else MaterialTheme.colorScheme.onPrimaryContainer,
                 )
                 ToolbarActionButton(icon = Icons.Default.AutoAwesome, label = "Night wizard", onClick = onOpenNightWizard)
+                ToolbarActionButton(icon = Icons.Default.SettingsInputAntenna, label = "Telescope", onClick = onOpenTelescope)
                 Spacer(Modifier.weight(1f))
             }
         },

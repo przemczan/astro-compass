@@ -154,6 +154,29 @@ class AppPreferences(private val settings: Settings) {
         settings.putFloat(KEY_WIZARD_MIN_ALTITUDE, degrees)
     }
 
+    /** Last-used telescope TCP host/port (see [com.astrocompass.ui.screens.TelescopeScreen]).
+     *  The port default follows SkyFi's documented convention, not a true LX200 standard --
+     *  editable from the start since it's a guess, not a protocol constant. */
+    val telescopeTcpHost = MutableStateFlow(settings.getStringOrNull(KEY_TELESCOPE_TCP_HOST) ?: "")
+    fun setTelescopeTcpHost(host: String) {
+        telescopeTcpHost.value = host
+        settings.putString(KEY_TELESCOPE_TCP_HOST, host)
+    }
+
+    val telescopeTcpPort = MutableStateFlow(settings.getInt(KEY_TELESCOPE_TCP_PORT, DEFAULT_TELESCOPE_TCP_PORT))
+    fun setTelescopeTcpPort(port: Int) {
+        telescopeTcpPort.value = port
+        settings.putInt(KEY_TELESCOPE_TCP_PORT, port)
+    }
+
+    /** Last-used paired Bluetooth telescope device address (Android only -- see
+     *  [com.astrocompass.telescope.bondedTelescopeCandidates]). Null = none remembered. */
+    val telescopeBluetoothAddress = MutableStateFlow(settings.getStringOrNull(KEY_TELESCOPE_BLUETOOTH_ADDRESS))
+    fun setTelescopeBluetoothAddress(address: String?) {
+        telescopeBluetoothAddress.value = address
+        if (address == null) settings.remove(KEY_TELESCOPE_BLUETOOTH_ADDRESS) else settings.putString(KEY_TELESCOPE_BLUETOOTH_ADDRESS, address)
+    }
+
     private companion object {
         const val KEY_TELESCOPE_AXIS = "telescope_axis"
         const val KEY_TOLERANCE = "on_target_tolerance_degrees"
@@ -178,10 +201,14 @@ class AppPreferences(private val settings: Settings) {
         const val KEY_WIZARD_SHOW_OTHER = "wizard_show_other"
         const val KEY_WIZARD_MAGNITUDE_LIMIT = "wizard_magnitude_limit"
         const val KEY_WIZARD_MIN_ALTITUDE = "wizard_min_altitude_degrees"
+        const val KEY_TELESCOPE_TCP_HOST = "telescope_tcp_host"
+        const val KEY_TELESCOPE_TCP_PORT = "telescope_tcp_port"
+        const val KEY_TELESCOPE_BLUETOOTH_ADDRESS = "telescope_bluetooth_address"
 
         const val DEFAULT_TOLERANCE_DEGREES = 0.5
         const val DEFAULT_MAGNITUDE_LIMIT = 13f
         const val DEFAULT_WIZARD_MAGNITUDE_LIMIT = 9f
         const val DEFAULT_WIZARD_MIN_ALTITUDE_DEGREES = 20f
+        const val DEFAULT_TELESCOPE_TCP_PORT = 4030
     }
 }

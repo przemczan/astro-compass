@@ -5,6 +5,7 @@ import com.astrocompass.location.StubLocationProvider
 import com.astrocompass.location.StubMagneticDeclinationProvider
 import com.astrocompass.platesolve.StubCameraCapture
 import com.astrocompass.sensors.StubOrientationSensor
+import com.astrocompass.telescope.StubBluetoothTelescopeTransport
 import com.russhwolf.settings.NSUserDefaultsSettings
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -19,6 +20,7 @@ fun MainViewController() = ComposeUIViewController {
         cameraCapture = StubCameraCapture(),
         magneticDeclinationProvider = StubMagneticDeclinationProvider(),
         settings = NSUserDefaultsSettings(NSUserDefaults.standardUserDefaults),
+        bluetoothTransportFactory = { StubBluetoothTelescopeTransport() },
     )
     GuiderApp(container)
 }

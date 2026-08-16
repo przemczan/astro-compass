@@ -22,6 +22,9 @@ import com.astrocompass.ui.screens.NightWizardListScreen
 import com.astrocompass.ui.screens.NightWizardOptionsScreen
 import com.astrocompass.ui.screens.SearchScreen
 import com.astrocompass.ui.screens.SettingsScreen
+import com.astrocompass.ui.screens.TelescopeScreen
+import com.astrocompass.telescope.TelescopeEndpoint
+import com.astrocompass.telescope.TelescopeTransportKind
 import com.astrocompass.ui.skymap.SkyMapViewport
 import com.astrocompass.ui.theme.AppTheme
 import com.astrocompass.ui.theme.GuiderTheme
@@ -39,6 +42,7 @@ fun GuiderApp(container: AppContainer, onExitApp: () -> Unit = {}) {
         var showAlignment by remember { mutableStateOf(false) }
         var showSettings by remember { mutableStateOf(false) }
         var showSearch by remember { mutableStateOf(false) }
+        var showTelescope by remember { mutableStateOf(false) }
 
         // Night Wizard: nightWizardObjects is the fixed candidate snapshot computed once by
         // NightWizardOptionsScreen's "Next" -- both the list-preview screen and the guide screen's
@@ -102,6 +106,7 @@ fun GuiderApp(container: AppContainer, onExitApp: () -> Unit = {}) {
             when {
                 showSettings -> showSettings = false
                 showAlignment -> showAlignment = false
+                showTelescope -> showTelescope = false
                 showNightWizardOptions -> cancelWizard()
                 nightWizardObjects != null && !nightWizardStarted -> openWizardOptions()
                 isGuiding && nightWizardObjects != null -> openWizardOptions()
@@ -110,7 +115,7 @@ fun GuiderApp(container: AppContainer, onExitApp: () -> Unit = {}) {
             }
         }
         BackHandler(
-            enabled = showSettings || showAlignment || showSearch || isGuiding ||
+            enabled = showSettings || showAlignment || showTelescope || showSearch || isGuiding ||
                 showNightWizardOptions || (nightWizardObjects != null && !nightWizardStarted),
             onBack = goBack,
         )
@@ -133,6 +138,40 @@ fun GuiderApp(container: AppContainer, onExitApp: () -> Unit = {}) {
                 onOpenSettings = { showSettings = true },
                 modifier = Modifier.fillMaxSize(),
             )
+
+            // container.bondedBluetoothDevices() is a Bluetooth-service IPC -- hoisted behind
+            // `remember` rather than called straight in TelescopeScreen's argument list, since
+            // GuiderApp recomposes on every sensor reading while the compass fallback is active
+            // (CompassAbsoluteReference self-refreshes continuously) and would otherwise repeat
+            // that call dozens of times a second while this screen is open.
+            showTelescope -> {
+                val bondedBluetoothDevices = remember(showTelescope) { container.bondedBluetoothDevices() }
+                TelescopeScreen(
+                    connectionState = container.telescopeConnection.state,
+                    reportedPosition = container.telescopeConnection.reportedPosition,
+                    initialTcpHost = container.preferences.telescopeTcpHost.value,
+                    initialTcpPort = container.preferences.telescopeTcpPort.value,
+                    onConnectTcp = { host, port ->
+                        container.preferences.setTelescopeTcpHost(host)
+                        container.preferences.setTelescopeTcpPort(port)
+                        container.connectTelescope(
+                            TelescopeEndpoint(TelescopeTransportKind.TCP, displayName = host, host = host, port = port),
+                        )
+                    },
+                    showBluetoothSection = container.supportsBluetoothTelescope,
+                    bondedBluetoothDevices = bondedBluetoothDevices,
+                    initialBluetoothAddress = container.preferences.telescopeBluetoothAddress.value,
+                    onConnectBluetooth = { address, name ->
+                        container.preferences.setTelescopeBluetoothAddress(address)
+                        container.connectTelescope(
+                            TelescopeEndpoint(TelescopeTransportKind.BLUETOOTH_CLASSIC, displayName = name, bluetoothAddress = address),
+                        )
+                    },
+                    onDisconnect = { container.disconnectTelescope() },
+                    onBack = goBack,
+                    modifier = Modifier.fillMaxSize(),
+                )
+            }
 
             showNightWizardOptions && location != null -> NightWizardOptionsScreen(
                 catalogRepository = container.catalogRepository,
@@ -253,6 +292,7 @@ fun GuiderApp(container: AppContainer, onExitApp: () -> Unit = {}) {
                 onOpenSettings = { showSettings = true },
                 onOpenAlignment = { showAlignment = true },
                 onOpenNightWizard = { showNightWizardOptions = true },
+                onOpenTelescope = { showTelescope = true },
                 // A confirmed exit clears any star alignment first -- a stale one from a previous
                 // session (potentially a different, unknown mounting) is worse than none at all;
                 // the compass fallback re-engages automatically, same as after a fresh install.
