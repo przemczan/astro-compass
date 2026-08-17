@@ -29,8 +29,8 @@ private const val TICK_INTERVAL_MILLIS = 1_000L
  *
  * [isReady] is false whenever the connection isn't [TelescopeConnectionState.Connected] or the
  * last report is older than [staleThresholdMillis] (a few poll intervals) -- this is what lets
- * [com.astrocompass.guiding.PrioritizedPointingSource] stay a dumb readiness check rather than
- * needing its own staleness logic.
+ * the Guidance screen show "waiting for the mount" from a plain readiness check, with no
+ * staleness logic of its own.
  */
 class TelescopePointingSource(
     scope: CoroutineScope,

@@ -41,6 +41,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import com.astrocompass.astro.Vector3
 import com.astrocompass.astro.time.currentEpochMillis
 import com.astrocompass.alignment.AlignmentPoint
 import com.astrocompass.alignment.AlignmentResult
@@ -71,6 +72,9 @@ private enum class StarSortMode(val label: String) { MAGNITUDE("Magnitude"), NAM
 fun AlignmentScreen(
     catalogRepository: CatalogRepository,
     location: ObserverLocation,
+    /** Marked in blue while a connected mount is reporting -- see
+     *  [com.astrocompass.AppContainer.telescopeSkyDirection]. */
+    telescopeDirection: Vector3?,
     onCapturePoint: (target: SkyObject, source: AlignmentSource, nowEpochMillis: Long) -> AlignmentPoint?,
     onSaveModel: (com.astrocompass.alignment.AlignmentModel) -> Unit,
     onBack: () -> Unit,
@@ -228,7 +232,9 @@ fun AlignmentScreen(
                             directions = snapshot.directions,
                             viewport = viewport,
                             onViewportChange = { viewport = it },
-                            markers = syncedMarkers,
+                            // Combined here rather than inside syncedMarkers' `remember(points)`,
+                            // which would freeze the mount's marker at its first report.
+                            markers = syncedMarkers + listOfNotNull(telescopeDirection?.let(SkyMapMarker::telescope)),
                             constellationLines = snapshot.constellationLines,
                             onSelect = { obj -> (obj as? StarObject)?.let { pendingTarget = it } },
                             modifier = Modifier.fillMaxWidth().weight(1f),

@@ -41,12 +41,13 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import com.astrocompass.astro.Vector3
 import com.astrocompass.astro.coords.HorizontalCoordinates
 import com.astrocompass.astro.time.currentEpochMillis
 import com.astrocompass.catalog.CatalogRepository
 import com.astrocompass.catalog.MapObjectFilter
 import com.astrocompass.catalog.SkyObject
-import com.astrocompass.guiding.PointingService
+import com.astrocompass.guiding.SkyPointingSource
 import com.astrocompass.guiding.currentHorizontal
 import com.astrocompass.location.ObserverLocation
 import com.astrocompass.ui.BackHandler
@@ -79,8 +80,12 @@ private const val DOUBLE_BACK_TO_EXIT_WINDOW_MILLIS = 2_000L
 fun MapScreen(
     catalogRepository: CatalogRepository,
     location: ObserverLocation?,
-    pointingService: PointingService,
+    pointingSource: SkyPointingSource,
+    /** Marked in blue while a connected mount is reporting -- see
+     *  [com.astrocompass.AppContainer.telescopeSkyDirection]. */
+    telescopeDirection: Vector3?,
     isStarAligned: Boolean,
+    isTelescopeConnected: Boolean,
     selectedTarget: SkyObject?,
     onSelectTarget: (SkyObject) -> Unit,
     onGoto: () -> Unit,
@@ -137,7 +142,13 @@ fun MapScreen(
                     contentColor = if (isStarAligned) LocalContentColor.current else MaterialTheme.colorScheme.onPrimaryContainer,
                 )
                 ToolbarActionButton(icon = Icons.Default.AutoAwesome, label = "Night wizard", onClick = onOpenNightWizard)
-                ToolbarActionButton(icon = Icons.Default.SettingsInputAntenna, label = "Telescope", onClick = onOpenTelescope)
+                ToolbarActionButton(
+                    icon = Icons.Default.SettingsInputAntenna,
+                    label = if (isTelescopeConnected) "Connected" else "Telescope",
+                    onClick = onOpenTelescope,
+                    containerColor = if (isTelescopeConnected) MaterialTheme.colorScheme.primaryContainer else null,
+                    contentColor = if (isTelescopeConnected) MaterialTheme.colorScheme.onPrimaryContainer else LocalContentColor.current,
+                )
                 Spacer(Modifier.weight(1f))
             }
         },
@@ -166,7 +177,7 @@ fun MapScreen(
         // Off by default -- unlike Guidance, this is a browse map, so following the phone's
         // pointing isn't the reason someone opened it. Same recenter-on-tick pattern as
         // GuidanceScreen's follow effect otherwise, just gated behind an opt-in toggle.
-        val currentPointing by pointingService.currentSkyDirection.collectAsState()
+        val currentPointing by pointingSource.currentSkyDirection.collectAsState()
         var followPointing by remember { mutableStateOf(false) }
         LaunchedEffect(currentPointing, followPointing) {
             val pointing = currentPointing
@@ -186,13 +197,16 @@ fun MapScreen(
                     constellationLines = snapshot.constellationLines,
                     northOffsetDirections = snapshot.northOffsetDirections,
                     showObjectPhotos = showObjectPhotos,
-                    markers = listOfNotNull(selectedTarget?.let { target ->
-                        SkyMapMarker(
-                            direction = target.currentHorizontal(location, now).toEnu(),
-                            color = MaterialTheme.colorScheme.primary,
-                            label = target.displayName,
-                        )
-                    }),
+                    markers = listOfNotNull(
+                        selectedTarget?.let { target ->
+                            SkyMapMarker(
+                                direction = target.currentHorizontal(location, now).toEnu(),
+                                color = MaterialTheme.colorScheme.primary,
+                                label = target.displayName,
+                            )
+                        },
+                        telescopeDirection?.let(SkyMapMarker::telescope),
+                    ),
                     onSelect = { obj -> onSelectTarget(obj) },
                     modifier = Modifier.fillMaxSize(),
                 )

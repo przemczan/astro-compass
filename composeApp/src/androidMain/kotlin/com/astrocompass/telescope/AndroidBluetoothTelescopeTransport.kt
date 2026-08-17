@@ -80,8 +80,10 @@ class AndroidBluetoothTelescopeTransport(
         val activeSocket = socket ?: error("AndroidBluetoothTelescopeTransport.write called while not connected")
         try {
             withContext(Dispatchers.IO) { activeSocket.outputStream.write(bytes) }
+            Log.d(TAG, "-> ${bytes.forWireLog()}")
         } catch (e: Exception) {
             _state.value = TelescopeTransportState.FAILED
+            Log.w(TAG, "write failed: ${bytes.forWireLog()}", e)
             throw e
         }
     }
@@ -97,16 +99,32 @@ class AndroidBluetoothTelescopeTransport(
         return try {
             withContext(Dispatchers.IO) {
                 val buffer = ByteArray(READ_CHUNK_SIZE)
+                Log.d(TAG, "<- waiting for bytes")
                 val count = activeSocket.inputStream.read(buffer)
                 if (count < 0) error("Telescope connection closed by peer")
-                buffer.copyOf(count)
+                buffer.copyOf(count).also { Log.d(TAG, "<- ${it.forWireLog()}") }
             }
         } catch (e: Exception) {
             _state.value = TelescopeTransportState.FAILED
+            Log.w(TAG, "read failed", e)
             throw e
         }
     }
 }
+
+/** Renders wire bytes for [Log] with every non-printable byte (and the space, invisible otherwise
+ *  yet load-bearing in this protocol's Set commands) escaped, so a logcat capture is enough to
+ *  diagnose a mount that answers nothing, answers garbage at the wrong baud, or objects to a
+ *  command's exact framing -- none of which are distinguishable from an unescaped dump. */
+private fun ByteArray.forWireLog(): String =
+    joinToString("") { byte ->
+        val char = byte.toInt().toChar()
+        when {
+            char == ' ' -> "<sp>"
+            char.code in 0x21..0x7E -> char.toString()
+            else -> "<${byte.toInt() and 0xFF}>"
+        }
+    }
 
 /** `BLUETOOTH_CONNECT` is a runtime permission only from API 31 onward -- older API levels rely
  *  solely on the install-time legacy `BLUETOOTH` permission declared in the manifest, so there is

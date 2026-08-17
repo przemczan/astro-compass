@@ -21,11 +21,13 @@ import com.astrocompass.catalog.StarObject
 import com.astrocompass.guiding.AbsoluteReference
 import com.astrocompass.guiding.AlignmentAbsoluteReference
 import com.astrocompass.guiding.CompassAbsoluteReference
+import com.astrocompass.guiding.GuidingMode
 import com.astrocompass.guiding.PlateSolveAttempt
 import com.astrocompass.guiding.PointingService
 import com.astrocompass.guiding.PrioritizedAbsoluteReference
-import com.astrocompass.guiding.PrioritizedPointingSource
+import com.astrocompass.guiding.SelectablePointingSource
 import com.astrocompass.guiding.SkyPointingSource
+import com.astrocompass.guiding.currentEquatorial
 import com.astrocompass.guiding.currentHorizontal
 import com.astrocompass.location.LocationProvider
 import com.astrocompass.location.LocationResolver
@@ -38,15 +40,24 @@ import com.astrocompass.platesolve.PlateSolver
 import com.astrocompass.platesolve.ReferenceStar
 import com.astrocompass.sensors.OrientationSensor
 import com.astrocompass.settings.AppPreferences
+import com.astrocompass.telescope.Lx200Codec
 import com.astrocompass.telescope.Lx200TelescopeConnection
+import com.astrocompass.telescope.SlewOutcome
+import com.astrocompass.telescope.SlewRatePreset
 import com.astrocompass.telescope.TcpTelescopeTransport
 import com.astrocompass.telescope.TelescopeConnection
+import com.astrocompass.telescope.TelescopeConnectionState
 import com.astrocompass.telescope.TelescopeEndpoint
 import com.astrocompass.telescope.TelescopePointingSource
 import com.astrocompass.telescope.TelescopeTransport
 import com.russhwolf.settings.Settings
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
@@ -107,15 +118,53 @@ class AppContainer(
     val pointingService = PointingService(scope, orientationSensor, absoluteReference, preferences.telescopeAxis)
 
     val telescopeConnection: TelescopeConnection =
-        Lx200TelescopeConnection(scope, tcpTransportFactory, bluetoothTransportFactory)
+        Lx200TelescopeConnection(scope, tcpTransportFactory, bluetoothTransportFactory, location = locationResolver.resolved)
 
     private val telescopePointingSource = TelescopePointingSource(scope, telescopeConnection, locationResolver.resolved)
 
-    /** A connected, actively-reporting mount wins outright over the phone-based [pointingService]
-     *  -- see [PrioritizedPointingSource]. Screens should consume this rather than
-     *  [pointingService] directly so a telescope connection transparently takes over. */
+    /** Where the mount reports itself pointing, or null while there is no connected mount reporting
+     *  freshly -- every sky map marks this (see [com.astrocompass.ui.components.SkyMapMarker.telescope]),
+     *  independent of [guidingMode]: seeing where the telescope actually points is useful even
+     *  while guidance itself follows the phone. Gated on [TelescopePointingSource.isReady] rather
+     *  than a plain null check on the direction, so a dropped connection clears the marker instead
+     *  of leaving the last report as a ghost. */
+    val telescopeSkyDirection: StateFlow<Vector3?> =
+        combine(telescopePointingSource.currentSkyDirection, telescopePointingSource.isReady) { direction, isReady ->
+            direction.takeIf { isReady }
+        }.stateIn(scope, SharingStarted.Eagerly, null)
+
+    /** The user's own pick from the Guidance screen's mode button. Defaults to
+     *  [GuidingMode.TELESCOPE] so a connected mount transparently takes over guidance exactly as
+     *  it did before the picker existed -- [guidingMode] is what resolves that against whether
+     *  there is a mount at all. */
+    private val selectedGuidingMode = MutableStateFlow(GuidingMode.TELESCOPE)
+
+    /** [selectedGuidingMode] resolved against the live connection: [GuidingMode.TELESCOPE] is
+     *  meaningless without a mount, so it degrades to [GuidingMode.MANUAL] whenever one isn't
+     *  connected.
+     *
+     *  Derived rather than written back on connect/disconnect. A collector would have to catch the
+     *  drop case too -- which surfaces as [TelescopeConnectionState.Failed], not `Disconnected`
+     *  (see [Lx200TelescopeConnection.watchForDrop]) -- or strand guidance waiting forever on a
+     *  mount that's gone, and it would also overwrite a deliberate Manual choice on every
+     *  reconnect. Deriving it does both correctly for free. */
+    val guidingMode: StateFlow<GuidingMode> =
+        combine(selectedGuidingMode, telescopeConnection.state) { mode, connectionState ->
+            if (connectionState is TelescopeConnectionState.Connected) mode else GuidingMode.MANUAL
+        }.stateIn(scope, SharingStarted.Eagerly, GuidingMode.MANUAL)
+
+    /** Whatever [guidingMode] currently names -- what
+     *  [MapScreen][com.astrocompass.ui.screens.MapScreen] and
+     *  [GuidanceScreen][com.astrocompass.ui.screens.GuidanceScreen] consume instead of
+     *  [pointingService] directly. [pointingService] itself stays the seed for [attemptPlateSolve]
+     *  regardless -- plate solving is a phone-camera feature and always corrects the phone's own
+     *  alignment, never the mount's. */
     val activePointingSource: SkyPointingSource =
-        PrioritizedPointingSource(scope, preferred = telescopePointingSource, fallback = pointingService)
+        SelectablePointingSource(scope, guidingMode, telescope = telescopePointingSource, phone = pointingService)
+
+    fun setGuidingMode(mode: GuidingMode) {
+        selectedGuidingMode.value = mode
+    }
 
     init {
         scope.launch { catalogRepository.load() }
@@ -259,9 +308,51 @@ class AppContainer(
         saveAlignment(attempt.correctedModel)
     }
 
-    suspend fun connectTelescope(endpoint: TelescopeEndpoint) = telescopeConnection.connect(endpoint)
+    /** [Lx200TelescopeConnection.connect] runs the mount-sync sequence (time, site, unpark)
+     *  itself, against [locationResolver]'s current value, with no separate user-facing step --
+     *  see its class doc for why that has to happen inside [TelescopeConnection.connect] rather
+     *  than as a second call from here. */
+    suspend fun connectTelescope(endpoint: TelescopeEndpoint) {
+        telescopeConnection.connect(endpoint)
+        // A mount remembers its own GOTO speed across power cycles, so it can disagree with the
+        // preference the sheet displays until something re-asserts it. A no-op if the connect
+        // above failed (see TelescopeConnection.setSlewRatePreset).
+        //
+        // This lands *after* connect() has started the position poll, which the mount-sync
+        // sequence deliberately does not (see Lx200TelescopeConnection's class doc). Safe only
+        // because :SX93 has no reply to misalign: Lx200Session's mutex keeps the write itself
+        // atomic, and there is no read that a concurrent :GR#/:GD# could steal. A command that
+        // *did* read a reply would have to go inside connect() instead.
+        telescopeConnection.setSlewRatePreset(preferences.slewRatePreset.value)
+    }
 
     suspend fun disconnectTelescope() = telescopeConnection.disconnect()
+
+    /** [target]'s of-date equatorial coordinates -- see [SkyObject.currentEquatorial] -- sent
+     *  straight to the mount, behind a re-assert of the chosen GOTO speed: OnStep silently ignores
+     *  a speed change while a slew or guide is running (see [Lx200Codec.setSlewRatePreset]), so
+     *  one picked mid-slew would otherwise never reach the mount while the sheet went on showing
+     *  it. Re-asserting here doesn't guarantee the mount is idle -- a GOTO fired during another
+     *  GOTO hits the same refusal -- it just makes every ordinary "change the speed, then slew"
+     *  sequence land, which is enough for the setting to self-heal without tracking mount state. */
+    suspend fun slewTelescopeTo(target: SkyObject, nowEpochMillis: Long): SlewOutcome {
+        telescopeConnection.setSlewRatePreset(preferences.slewRatePreset.value)
+        return telescopeConnection.slewTo(target.currentEquatorial(nowEpochMillis))
+    }
+
+    suspend fun abortTelescopeSlew() = telescopeConnection.abortSlew()
+
+    /** Persists the GOTO speed and pushes it at the mount right away; also re-asserted by
+     *  [slewTelescopeTo] and [connectTelescope]. */
+    suspend fun setSlewRatePreset(preset: SlewRatePreset) {
+        preferences.setSlewRatePreset(preset)
+        telescopeConnection.setSlewRatePreset(preset)
+    }
+
+    /** False if the mount refused -- OnStep won't start tracking while parked. */
+    suspend fun setTelescopeTracking(enabled: Boolean): Boolean = telescopeConnection.setTracking(enabled)
+
+    suspend fun readTelescopeTracking(): Boolean? = telescopeConnection.readTrackingEnabled()
 
     /** Re-queried on every call rather than cached -- the paired-device list can change any time
      *  the user visits Android's own Bluetooth settings, and [com.astrocompass.ui.screens.TelescopeScreen]

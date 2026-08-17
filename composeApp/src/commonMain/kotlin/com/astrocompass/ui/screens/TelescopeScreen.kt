@@ -34,6 +34,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import com.astrocompass.telescope.MountSyncStep
+import com.astrocompass.telescope.MountSyncStepOutcome
+import com.astrocompass.telescope.MountSyncStepResult
 import com.astrocompass.telescope.TelescopeConnectionState
 import com.astrocompass.telescope.TelescopeReport
 import com.astrocompass.telescope.TelescopeTransportKind
@@ -47,6 +50,7 @@ import kotlinx.coroutines.launch
 fun TelescopeScreen(
     connectionState: StateFlow<TelescopeConnectionState>,
     reportedPosition: StateFlow<TelescopeReport?>,
+    mountSyncResults: StateFlow<List<MountSyncStepResult>>,
     initialTcpHost: String,
     initialTcpPort: Int,
     onConnectTcp: suspend (host: String, port: Int) -> Unit,
@@ -60,6 +64,7 @@ fun TelescopeScreen(
 ) {
     val state by connectionState.collectAsState()
     val report by reportedPosition.collectAsState()
+    val syncResults by mountSyncResults.collectAsState()
     val scope = rememberCoroutineScope()
 
     var hostText by remember { mutableStateOf(initialTcpHost) }
@@ -100,6 +105,9 @@ fun TelescopeScreen(
                     style = MaterialTheme.typography.bodyMedium,
                     modifier = Modifier.padding(top = 8.dp),
                 )
+            }
+            if (syncResults.isNotEmpty()) {
+                MountSyncChecklist(syncResults, Modifier.padding(top = 8.dp))
             }
 
             SectionTitle("Wi-Fi / TCP", modifier = Modifier.padding(top = 24.dp))
@@ -240,4 +248,52 @@ private fun ConnectionStatusRow(state: TelescopeConnectionState) {
                 style = MaterialTheme.typography.bodyMedium,
             )
     }
+}
+
+/** [com.astrocompass.telescope.TelescopeConnection.connect] runs the mount-sync sequence itself,
+ *  with no separate button here -- this is purely a status readout. Nothing in the app gates on it,
+ *  see [com.astrocompass.telescope.TelescopeConnection.mountSyncResults]. */
+@Composable
+private fun MountSyncChecklist(results: List<MountSyncStepResult>, modifier: Modifier = Modifier) {
+    Column(modifier) {
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            results.forEach { result ->
+                Text(
+                    "${result.step.label()} ${result.outcome.symbol()}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = result.outcome.color(),
+                )
+            }
+        }
+        results.forEach { result ->
+            val reason = (result.outcome as? MountSyncStepOutcome.Failed)?.reason ?: return@forEach
+            Text(
+                "${result.step.label()}: $reason",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error,
+                modifier = Modifier.padding(top = 2.dp),
+            )
+        }
+    }
+}
+
+private fun MountSyncStep.label(): String = when (this) {
+    MountSyncStep.LINK -> "Link"
+    MountSyncStep.TIME -> "Time"
+    MountSyncStep.SITE -> "Site"
+    MountSyncStep.UNPARK -> "Unpark"
+    MountSyncStep.TRACKING -> "Tracking"
+}
+
+private fun MountSyncStepOutcome.symbol(): String = when (this) {
+    is MountSyncStepOutcome.Success -> "✓"
+    is MountSyncStepOutcome.Failed -> "⚠"
+    is MountSyncStepOutcome.Skipped -> "–"
+}
+
+@Composable
+private fun MountSyncStepOutcome.color() = when (this) {
+    is MountSyncStepOutcome.Success -> MaterialTheme.colorScheme.onSurfaceVariant
+    is MountSyncStepOutcome.Failed -> MaterialTheme.colorScheme.error
+    is MountSyncStepOutcome.Skipped -> MaterialTheme.colorScheme.onSurfaceVariant
 }

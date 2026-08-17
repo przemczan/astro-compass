@@ -23,6 +23,7 @@ import com.astrocompass.ui.screens.NightWizardOptionsScreen
 import com.astrocompass.ui.screens.SearchScreen
 import com.astrocompass.ui.screens.SettingsScreen
 import com.astrocompass.ui.screens.TelescopeScreen
+import com.astrocompass.telescope.TelescopeConnectionState
 import com.astrocompass.telescope.TelescopeEndpoint
 import com.astrocompass.telescope.TelescopeTransportKind
 import com.astrocompass.ui.skymap.SkyMapViewport
@@ -77,6 +78,11 @@ fun GuiderApp(container: AppContainer, onExitApp: () -> Unit = {}) {
         // MapScreen's "Aligned" button specifically means a real star alignment, not a rough guess.
         val absoluteReferenceState by container.absoluteReference.current.collectAsState()
         val isStarAligned = absoluteReferenceState?.origin == ReferenceOrigin.STAR_ALIGNMENT
+        val telescopeConnectionState by container.telescopeConnection.state.collectAsState()
+        val isTelescopeConnected = telescopeConnectionState is TelescopeConnectionState.Connected
+        val guidingMode by container.guidingMode.collectAsState()
+        val telescopeDirection by container.telescopeSkyDirection.collectAsState()
+        val slewRatePreset by container.preferences.slewRatePreset.collectAsState()
 
         val location = resolvedLocation
 
@@ -132,6 +138,7 @@ fun GuiderApp(container: AppContainer, onExitApp: () -> Unit = {}) {
             showAlignment && location != null -> AlignmentScreen(
                 catalogRepository = container.catalogRepository,
                 location = location,
+                telescopeDirection = telescopeDirection,
                 onCapturePoint = container::captureAlignmentPoint,
                 onSaveModel = { model -> container.saveAlignment(model) },
                 onBack = goBack,
@@ -149,6 +156,7 @@ fun GuiderApp(container: AppContainer, onExitApp: () -> Unit = {}) {
                 TelescopeScreen(
                     connectionState = container.telescopeConnection.state,
                     reportedPosition = container.telescopeConnection.reportedPosition,
+                    mountSyncResults = container.telescopeConnection.mountSyncResults,
                     initialTcpHost = container.preferences.telescopeTcpHost.value,
                     initialTcpPort = container.preferences.telescopeTcpPort.value,
                     onConnectTcp = { host, port ->
@@ -216,7 +224,8 @@ fun GuiderApp(container: AppContainer, onExitApp: () -> Unit = {}) {
                 val target = wizardObjects?.getOrNull(nightWizardIndex) ?: selectedTarget!!
                 GuidanceScreen(
                     target = target,
-                    pointingService = container.pointingService,
+                    pointingSource = container.activePointingSource,
+                    telescopeDirection = telescopeDirection,
                     absoluteReference = container.absoluteReference.current,
                     location = location,
                     catalogRepository = container.catalogRepository,
@@ -227,6 +236,15 @@ fun GuiderApp(container: AppContainer, onExitApp: () -> Unit = {}) {
                     onOpenAlignment = { isGuiding = false; showAlignment = true },
                     onOpenSettings = { showSettings = true },
                     onExitGuiding = { if (wizardObjects != null) cancelWizard() else isGuiding = false },
+                    onGoto = { container.slewTelescopeTo(target, currentEpochMillis()) },
+                    onAbortSlew = { container.abortTelescopeSlew() },
+                    guidingMode = guidingMode,
+                    onGuidingModeChange = { container.setGuidingMode(it) },
+                    isTelescopeConnected = isTelescopeConnected,
+                    slewRatePreset = slewRatePreset,
+                    onSlewRatePresetChange = { container.setSlewRatePreset(it) },
+                    onReadTracking = { container.readTelescopeTracking() },
+                    onSetTracking = { container.setTelescopeTracking(it) },
                     showObjectPhotos = showObjectImages,
                     mapObjectFilter = mapObjectFilter,
                     wizardProgress = wizardObjects?.let { (nightWizardIndex + 1) to it.size },
@@ -275,8 +293,10 @@ fun GuiderApp(container: AppContainer, onExitApp: () -> Unit = {}) {
             else -> MapScreen(
                 catalogRepository = container.catalogRepository,
                 location = location,
-                pointingService = container.pointingService,
+                pointingSource = container.activePointingSource,
+                telescopeDirection = telescopeDirection,
                 isStarAligned = isStarAligned,
+                isTelescopeConnected = isTelescopeConnected,
                 selectedTarget = selectedTarget,
                 onSelectTarget = { target ->
                     selectedTarget = target

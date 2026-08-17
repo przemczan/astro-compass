@@ -1,5 +1,6 @@
 package com.astrocompass.telescope
 
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -17,8 +18,13 @@ class FakeTelescopeTransport : TelescopeTransport {
     /** Set before [connect] to simulate a connection failure (device unreachable, refused, ...). */
     var connectShouldFail: Boolean = false
 
+    /** Set before [connect] to simulate an unresponsive device that never completes the connect
+     *  attempt -- exercises [Lx200TelescopeConnection]'s connect timeout under virtual time. */
+    var connectShouldHang: Boolean = false
+
     override suspend fun connect() {
         _state.value = TelescopeTransportState.CONNECTING
+        if (connectShouldHang) awaitCancellation()
         _state.value = if (connectShouldFail) TelescopeTransportState.FAILED else TelescopeTransportState.CONNECTED
     }
 
@@ -26,11 +32,19 @@ class FakeTelescopeTransport : TelescopeTransport {
         _state.value = TelescopeTransportState.DISCONNECTED
     }
 
+    /** Mirrors [TcpTelescopeTransport]/`AndroidBluetoothTelescopeTransport`'s own
+     *  "`error(...)` if the underlying socket field is gone" contract -- without this, a test
+     *  simulating a mid-session drop (e.g. via [disconnect]) would let writes/reads silently keep
+     *  succeeding afterward, which no real transport does. */
     override suspend fun write(bytes: ByteArray) {
+        check(_state.value == TelescopeTransportState.CONNECTED) { "FakeTelescopeTransport.write called while not connected" }
         writes += bytes.decodeToString()
     }
 
-    override suspend fun readAvailable(): ByteArray = inbound.receive()
+    override suspend fun readAvailable(): ByteArray {
+        check(_state.value == TelescopeTransportState.CONNECTED) { "FakeTelescopeTransport.readAvailable called while not connected" }
+        return inbound.receive()
+    }
 
     /** Queues bytes for the next [readAvailable] call(s) to return -- split across multiple calls
      *  to exercise a response spread over several reads, or combined in one to exercise several

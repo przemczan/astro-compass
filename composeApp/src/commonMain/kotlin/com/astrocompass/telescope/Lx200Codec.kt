@@ -33,18 +33,105 @@ object Lx200Codec {
     fun slewToTarget(): String = ":MS#"
     fun abortSlew(): String = ":Q#"
 
-    /** `:Sr HH:MM:SS#` -- set target right ascension. Ack via [parseTargetSetAck]. */
+    /** `:Sr HH:MM:SS#` -- set target right ascension. Ack via [parseAck]. */
     fun setTargetRightAscension(ra: Angle): String {
         val (h, m, s) = sexagesimalParts(ra.normalized().hours)
         return ":Sr ${pad2(h)}:${pad2(m)}:${pad2(s)}#"
     }
 
-    /** `:Sd sDD*MM:SS#` -- set target declination. Ack via [parseTargetSetAck]. */
+    /** `:Sd sDD*MM:SS#` -- set target declination. Ack via [parseAck]. */
     fun setTargetDeclination(dec: Angle): String {
         val sign = if (dec.degrees < 0) "-" else "+"
         val (d, m, s) = sexagesimalParts(abs(dec.degrees))
         return ":Sd $sign${pad2(d)}*${pad2(m)}:${pad2(s)}#"
     }
+
+    // -- Mount sync (Lx200TelescopeConnection.syncMount): date/time, site, and unpark --------
+    //
+    // Verified against OnStep's own source (hjd1964/OnStep, Command.ino, release-4.24) rather
+    // than guessed, since a wrong sign here silently points the mount at the wrong sky instead of
+    // failing loudly:
+    //  - Site longitude is west-positive/east-negative (OnStep's own comment: "east longitudes can
+    //    be negative or > 180 degrees") -- the *opposite* of this app's own east-positive
+    //    [ObserverLocation.longitude] (see [com.astrocompass.astro.time.AstroTime.localSiderealTime]'s
+    //    doc comment), so [setSiteLongitude] negates before encoding.
+    //  - The UTC offset command's sign is the reverse of the intuitive time-zone sign (OnStep's own
+    //    docs: EST, time zone -5, has UTC Offset +5). [setUtcOffset] is only ever called with 0 by
+    //    [Lx200TelescopeConnection.syncMount] specifically to sidestep this: with the offset at
+    //    zero, the mount's "local time" concept becomes UTC, so [setDate]/[setTime] can send
+    //    [com.astrocompass.astro.time.currentEpochMillis] straight through with no time-zone/DST
+    //    logic anywhere in this app.
+    //  - Site latitude is north-positive, matching [ObserverLocation.latitude] already -- no flip.
+    //
+    // The space after the command mnemonic (matching [setTargetRightAscension]/
+    // [setTargetDeclination]'s convention above) is accepted -- confirmed on the wire against a
+    // real OnStep mount, which answered `:SG +00#` with an ack rather than a rejection. Every one
+    // of these commands answers with a bare, *unterminated* character; see [parseAck] and
+    // [Lx200Session.executeCharAck].
+
+    /** `:SC MM/DD/YY#` -- set the mount's calendar date. Always UTC, see [setUtcOffset]. Ack via
+     *  [parseAck]. */
+    fun setDate(year: Int, month: Int, day: Int): String =
+        ":SC ${pad2(month)}/${pad2(day)}/${pad2(year % 100)}#"
+
+    /** `:SL HH:MM:SS#` -- set the mount's time of day. Always UTC, see [setUtcOffset]. Ack via
+     *  [parseAck]. */
+    fun setTime(hour: Int, minute: Int, second: Int): String =
+        ":SL ${pad2(hour)}:${pad2(minute)}:${pad2(second)}#"
+
+    /** `:SG sHH#` -- set the mount's UTC offset. Ack via [parseAck]. */
+    fun setUtcOffset(hours: Int): String {
+        val sign = if (hours < 0) "-" else "+"
+        return ":SG $sign${pad2(abs(hours))}#"
+    }
+
+    /** `:St sDD*MM#` -- set site latitude, north-positive. Ack via [parseAck]. */
+    fun setSiteLatitude(latitude: Angle): String {
+        val sign = if (latitude.degrees < 0) "-" else "+"
+        val (d, m, _) = sexagesimalParts(abs(latitude.degrees))
+        return ":St $sign${pad2(d)}*${pad2(m)}#"
+    }
+
+    /** `:Sg sDDD*MM#` -- set site longitude, west-positive (the opposite sign convention from
+     *  this app's own [ObserverLocation.longitude] -- see the section doc above). Ack via
+     *  [parseAck]. */
+    fun setSiteLongitude(longitude: Angle): String {
+        val westPositiveDegrees = -longitude.degrees
+        val sign = if (westPositiveDegrees < 0) "-" else "+"
+        val (d, m, _) = sexagesimalParts(abs(westPositiveDegrees))
+        return ":Sg $sign${pad3(d)}*${pad2(m)}#"
+    }
+
+    /** `:hR#` -- unpark, resuming operation with whatever alignment model the mount already has.
+     *  An OnStep extension, not classic LX200. Ack via [parseAck]. */
+    fun unpark(): String = ":hR#"
+
+    // -- Mount options (TelescopeOptionsSheet): GOTO speed and tracking ------------------------
+    //
+    // Verified against OnStepX's own source (hjd1964/OnStepX, `Goto.command.cpp` and
+    // `Mount.command.cpp`) for the same reason the sync commands above were.
+
+    /** `:SX93,n#` -- set the GOTO speed preset (see [SlewRatePreset]).
+     *
+     *  Two things set this apart from every other Set command here. It answers **nothing at all**
+     *  (OnStepX sets `numericReply = false`), so it goes out through [Lx200Session.executeNoReply];
+     *  reading an ack instead would block until the timeout tore the whole connection down. And it
+     *  takes **no space after the mnemonic**, unlike the commands above: OnStepX picks the preset
+     *  out of the parameter positionally (`parameter[3]` of `93,n`), so a space would shift the
+     *  digit out of range and silently select the base rate.
+     *
+     *  OnStep also ignores this outright while a slew or guide is already running -- silently,
+     *  since there's no reply to carry the refusal -- which is why
+     *  [com.astrocompass.AppContainer.slewTelescopeTo] re-sends it before every slew. */
+    fun setSlewRatePreset(preset: SlewRatePreset): String = ":SX93,${preset.onStepParameter}#"
+
+    /** `:Te#` / `:Td#` -- start/stop sidereal tracking. Ack via [parseAck]; a parked mount rejects
+     *  the enable (OnStepX answers `CE_PARKED`). */
+    fun setTracking(enabled: Boolean): String = if (enabled) ":Te#" else ":Td#"
+
+    /** `:GU#` -- OnStep's general status string, a run of single-character flags. Parsed by
+     *  [parseTrackingEnabled]; nothing else in the app reads it. */
+    fun getStatus(): String = ":GU#"
 
     /** Parses a `:GR#` reply body (terminator already stripped): `HH:MM:SS` (high precision) or
      *  `HH:MM.T` (low precision, T = tenths of a minute). */
@@ -82,11 +169,30 @@ object Lx200Codec {
         return Angle.ofDegrees(if (negative) -magnitude else magnitude)
     }
 
-    /** `:Sr#`/`:Sd#` ack -- NOTE inverted vs. [slewToTarget]'s reply: `"1"` means accepted,
-     *  `"0"` means invalid. */
-    fun parseTargetSetAck(reply: String): Boolean = reply.trim().removeSuffix("#") == "1"
+    /** Every Set-command's ack (`:Sr#`, `:Sd#`, `:SC#`, `:SL#`, `:SG#`, `:St#`, `:Sg#`, `:hR#`),
+     *  read by [Lx200Session.executeCharAck] -- a single character, no `#` terminator. NOTE
+     *  inverted vs. [slewToTarget]'s reply: `"1"` means accepted, `"0"` means invalid. */
+    fun parseAck(reply: String): Boolean = reply.trim() == "1"
+
+    /** Reads tracking state out of a [getStatus] reply body.
+     *
+     *  Tests the *first* character rather than searching the whole string for `'n'`: "not tracking"
+     *  is the very first flag OnStep appends, so nothing can ever precede it, while a plain search
+     *  would also match the `'r'`,`'n'` pair classic OnStep emits for "no rate compensation" and
+     *  report a happily tracking mount as stopped.
+     *
+     *  Throws on an empty reply rather than reading it as "tracking on" -- the caller renders an
+     *  unknown state as such (see [TelescopeConnection.readTrackingEnabled]), and silently
+     *  answering "on" for a mount that said nothing is the one guess this whole path exists to
+     *  avoid. */
+    fun parseTrackingEnabled(status: String): Boolean {
+        val flags = status.trim()
+        require(flags.isNotEmpty()) { "Empty status reply" }
+        return !flags.startsWith('n')
+    }
 
     private fun pad2(value: Int): String = value.toString().padStart(2, '0')
+    private fun pad3(value: Int): String = value.toString().padStart(3, '0')
 
     private fun sexagesimalParts(magnitude: Double): Triple<Int, Int, Int> {
         val whole = floor(magnitude).toInt()

@@ -6,6 +6,7 @@ import com.astrocompass.guiding.CameraMounting
 import com.astrocompass.guiding.TelescopeAxis
 import com.astrocompass.location.ObserverLocation
 import com.astrocompass.sensors.SensorSource
+import com.astrocompass.telescope.SlewRatePreset
 import com.astrocompass.ui.theme.AppTheme
 import com.russhwolf.settings.Settings
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -177,6 +178,19 @@ class AppPreferences(private val settings: Settings) {
         if (address == null) settings.remove(KEY_TELESCOPE_BLUETOOTH_ADDRESS) else settings.putString(KEY_TELESCOPE_BLUETOOTH_ADDRESS, address)
     }
 
+    /** The GOTO speed sent to a connected mount (see [SlewRatePreset]). Persisted because OnStep
+     *  offers no way to read the preset back -- it stores a derived microseconds-per-step value,
+     *  not the 1..5 selection -- so remembering what was last asked for is the only way the sheet
+     *  can show the mount's actual speed. */
+    val slewRatePreset = MutableStateFlow(
+        settings.getStringOrNull(KEY_SLEW_RATE_PRESET)?.let { runCatching { SlewRatePreset.valueOf(it) }.getOrNull() }
+            ?: SlewRatePreset.DEFAULT
+    )
+    fun setSlewRatePreset(preset: SlewRatePreset) {
+        slewRatePreset.value = preset
+        settings.putString(KEY_SLEW_RATE_PRESET, preset.name)
+    }
+
     private companion object {
         const val KEY_TELESCOPE_AXIS = "telescope_axis"
         const val KEY_TOLERANCE = "on_target_tolerance_degrees"
@@ -204,6 +218,7 @@ class AppPreferences(private val settings: Settings) {
         const val KEY_TELESCOPE_TCP_HOST = "telescope_tcp_host"
         const val KEY_TELESCOPE_TCP_PORT = "telescope_tcp_port"
         const val KEY_TELESCOPE_BLUETOOTH_ADDRESS = "telescope_bluetooth_address"
+        const val KEY_SLEW_RATE_PRESET = "telescope_slew_rate_preset"
 
         const val DEFAULT_TOLERANCE_DEGREES = 0.5
         const val DEFAULT_MAGNITUDE_LIMIT = 13f

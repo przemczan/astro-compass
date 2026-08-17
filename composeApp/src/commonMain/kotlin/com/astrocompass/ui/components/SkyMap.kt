@@ -49,6 +49,7 @@ import com.astrocompass.catalog.objectImage
 import com.astrocompass.ui.skymap.SkyMapDirectionCache
 import com.astrocompass.ui.skymap.SkyMapScene
 import com.astrocompass.ui.skymap.SkyMapViewport
+import com.astrocompass.ui.theme.TelescopeBlue
 import kotlin.math.atan2
 import kotlin.math.max
 import kotlin.math.min
@@ -61,7 +62,14 @@ data class SkyMapMarker(
     val direction: Vector3,
     val color: Color,
     val label: String? = null,
-)
+) {
+    companion object {
+        /** The connected mount's own reported direction -- drawn exactly like any other marker, in
+         *  [TelescopeBlue] so it reads as the telescope's position rather than the app's own
+         *  pointing, on every map that shows one. */
+        fun telescope(direction: Vector3): SkyMapMarker = SkyMapMarker(direction, TelescopeBlue)
+    }
+}
 
 /** A resolved, ready-to-draw bundled photo for one object at the current zoom --
  *  [rotationDegrees] is the clockwise screen rotation that points the (assumed north-up) photo's
