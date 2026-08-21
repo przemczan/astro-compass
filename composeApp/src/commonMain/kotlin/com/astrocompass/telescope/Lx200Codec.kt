@@ -33,6 +33,59 @@ object Lx200Codec {
     fun slewToTarget(): String = ":MS#"
     fun abortSlew(): String = ":Q#"
 
+    // -- Mount alignment (AlignmentScreen's Telescope mode) -----------------------------------
+    //
+    // Verified against OnStepX's own source (hjd1964/OnStepX, `Goto.command.cpp` / `Goto.cpp`) and
+    // its `docs/COMMAND_REFERENCE.md`, for the same reason the site/time commands below were.
+    //
+    // The sequence is stateful on the mount: [beginAlignment] arms it, each [syncToTarget] adds one
+    // point, and the point that takes it past the requested star count is the one that computes the
+    // model -- after which [writeAlignmentModel] persists it. There is no abort command in the
+    // protocol; a re-sent [beginAlignment] is the only way back out of a half-finished sequence.
+
+    /** `:A<n>#` -- arm an n-star alignment. Ack via [parseAck].
+     *
+     *  **Destructive, and not just to the model.** OnStepX's handler resets the home position
+     *  (`home.reset()`, or `home.requestWithReset()` -- an actual slew -- on a build with
+     *  `ALIGN_AUTO_HOME`), so the mount must physically be at home first, and it forces tracking
+     *  on regardless of what it was doing. */
+    fun beginAlignment(starCount: Int): String {
+        require(starCount in 1..9) { "LX200 supports 1-9 alignment stars, not $starCount" }
+        return ":A$starCount#"
+    }
+
+    /** `:hC#` -- slew the mount to its home position. Answers nothing at all, so it goes out
+     *  through [Lx200Session.executeNoReply]. Offered alongside [beginAlignment] because that
+     *  command declares wherever the mount *currently* stands to be home -- getting it genuinely
+     *  home first is the difference between a real alignment and one built on a fiction. */
+    fun moveToHome(): String = ":hC#"
+
+    /** `:AW#` -- persist the alignment model to the mount's non-volatile storage. Ack via
+     *  [parseAck]. Without it a completed model is live but lost on the next power cycle. */
+    fun writeAlignmentModel(): String = ":AW#"
+
+    /** `:CM#` -- tell the mount it is currently pointed at the target set by
+     *  [setTargetRightAscension]/[setTargetDeclination].
+     *
+     *  **Means two different things depending on mount state**, deliberately so: with no alignment
+     *  armed it corrects the mount's pointing origin outright (`requestSync`), while inside a
+     *  [beginAlignment] sequence the same command instead contributes one point to the model
+     *  (`alignAddStar`). Preferred over `:A+#` for that second role because `:CM#` passes
+     *  `sync = true`, which takes the point from the target just set here; `:A+#` passes `false`
+     *  and reuses whatever target a previous `:MS#` slew left behind, so a confirm without a GOTO
+     *  in front of it would add a stale point.
+     *
+     *  Chosen over the otherwise-equivalent `:CS#`, which OnStepX answers with nothing at all:
+     *  `:CM#` sets `numericReply = false` *and* a non-empty reply body, so the frame `'#'` is
+     *  appended (`libApp/commands/ProcessCmds.cpp`) and it reads as an ordinary
+     *  [Lx200Session.executeHashTerminated] exchange. Parse via [parseSyncAccepted]. */
+    fun syncToTarget(): String = ":CM#"
+
+    /** Parses a [syncToTarget] reply body (terminator already stripped). OnStepX answers `N/A` on
+     *  success and `E1`..`E9` on refusal (`Goto.command.cpp`), with no message text to show, so
+     *  the outcome collapses to a boolean here and the caller supplies the wording. */
+    fun parseSyncAccepted(reply: String): Boolean = reply.trim() == "N/A"
+
     /** `:Sr HH:MM:SS#` -- set target right ascension. Ack via [parseAck]. */
     fun setTargetRightAscension(ra: Angle): String {
         val (h, m, s) = sexagesimalParts(ra.normalized().hours)
@@ -173,6 +226,16 @@ object Lx200Codec {
      *  read by [Lx200Session.executeCharAck] -- a single character, no `#` terminator. NOTE
      *  inverted vs. [slewToTarget]'s reply: `"1"` means accepted, `"0"` means invalid. */
     fun parseAck(reply: String): Boolean = reply.trim() == "1"
+
+    /** Reads "the mount is at its home position" out of a [getStatus] reply body -- OnStep's `H`
+     *  flag. A plain search is safe where [parseTrackingEnabled] needs a positional test: `H` is
+     *  the only uppercase H in the flag set (`h`, lowercase, is *homing* and deliberately does not
+     *  match). Throws on an empty reply for the same reason [parseTrackingEnabled] does. */
+    fun parseAtHome(status: String): Boolean {
+        val flags = status.trim()
+        require(flags.isNotEmpty()) { "Empty status reply" }
+        return flags.contains('H')
+    }
 
     /** Reads tracking state out of a [getStatus] reply body.
      *

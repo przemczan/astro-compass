@@ -4,24 +4,29 @@ package com.astrocompass.ui.screens
 
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.GpsFixed
 import androidx.compose.material.icons.filled.Map
+import androidx.compose.material.icons.filled.RestartAlt
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material3.BottomAppBar
 import androidx.compose.material3.Button
-import androidx.compose.material3.Card
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.ListItem
@@ -29,20 +34,28 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SegmentedButton
+import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.VerticalDivider
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.astrocompass.astro.Vector3
 import com.astrocompass.astro.time.currentEpochMillis
+import com.astrocompass.alignment.AlignmentModel
 import com.astrocompass.alignment.AlignmentPoint
 import com.astrocompass.alignment.AlignmentResult
 import com.astrocompass.alignment.AlignmentSolver
@@ -50,50 +63,138 @@ import com.astrocompass.alignment.AlignmentSource
 import com.astrocompass.catalog.CatalogRepository
 import com.astrocompass.catalog.SkyObject
 import com.astrocompass.catalog.StarObject
+import com.astrocompass.guiding.GuidingMode
 import com.astrocompass.guiding.currentHorizontal
 import com.astrocompass.location.ObserverLocation
+import com.astrocompass.telescope.SlewOutcome
+import com.astrocompass.telescope.SyncOutcome
+import com.astrocompass.ui.components.GuidingModeButton
 import com.astrocompass.ui.components.SkyMap
 import com.astrocompass.ui.components.SkyMapMarker
+import com.astrocompass.ui.components.ToolbarActionButton
+import com.astrocompass.ui.components.mapOverlayScrim
 import com.astrocompass.ui.components.rememberSkyMapSnapshot
 import com.astrocompass.ui.skymap.SkyMapViewport
 import com.astrocompass.ui.theme.OnTargetGreen
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 private const val SUGGESTION_MAGNITUDE_LIMIT = 3.5f
 private const val SUGGESTION_MIN_ALTITUDE_DEGREES = 15.0
 private const val MIN_SEPARATION_FOR_SUGGESTIONS_DEGREES = 30.0
 private const val MAX_SUGGESTIONS = 50
 
+/** How often the Start card re-asks the mount whether it is home. Brisk enough that a "Send home"
+ *  slew clears the warning on its own, and alive only while that card is showing. */
+private const val HOME_STATUS_POLL_INTERVAL_MILLIS = 2_000L
+
 /** How the list view orders [suggestStars]'s result -- [MAGNITUDE] matches the order the function
  *  already returns (brightest first), so that mode needs no re-sort. */
 private enum class StarSortMode(val label: String) { MAGNITUDE("Magnitude"), NAME("Name") }
 
+/**
+ * Walks the user through 2-3 star syncs, one star at a time: pick a star, point the telescope at
+ * it, confirm. The sky map is the permanent backdrop for all of that -- every step renders as an
+ * overlay on top of it rather than replacing it, so the surrounding sky stays available for
+ * star-hopping by eye while a pick is pending. The map only ever *picks* a star while a pick could
+ * actually go somewhere; otherwise it is an overview and nothing more, and the overlay's own
+ * buttons are the only way forward or back.
+ *
+ * [guidingMode] chooses **which instrument the run aligns, never both**:
+ *
+ * - [GuidingMode.PHONE] fits the phone's own [AlignmentModel] from sensor readings, via
+ *   [onCapturePoint] and [AlignmentSolver]. The mount is not touched.
+ * - [GuidingMode.TELESCOPE] drives OnStep's own stateful alignment on the mount --
+ *   [onBeginMountAlignment] arms it, each confirm feeds it one star through [onSyncTelescope], and
+ *   [onSaveMountAlignmentModel] persists the result. No sensor reading is captured and no phone
+ *   model is written: with the phone in the user's hand rather than on the telescope, a sensor
+ *   direction taken at confirm time describes nothing.
+ *
+ * The run itself lives in [session], outside this composable, because the top bar's Settings
+ * button tears the screen down -- and because re-arming a mount mid-run re-homes it.
+ */
 @Composable
 fun AlignmentScreen(
+    session: AlignmentSession,
     catalogRepository: CatalogRepository,
     location: ObserverLocation,
     /** Marked in blue while a connected mount is reporting -- see
      *  [com.astrocompass.AppContainer.telescopeSkyDirection]. */
     telescopeDirection: Vector3?,
     onCapturePoint: (target: SkyObject, source: AlignmentSource, nowEpochMillis: Long) -> AlignmentPoint?,
-    onSaveModel: (com.astrocompass.alignment.AlignmentModel) -> Unit,
+    onSaveModel: (AlignmentModel) -> Unit,
+    guidingMode: GuidingMode,
+    onGuidingModeChange: (GuidingMode) -> Unit,
+    isTelescopeConnected: Boolean,
+    /** Slews a connected mount to the pending star, so the user only has to correct the last
+     *  degree or so by hand instead of finding it from scratch. */
+    onGoto: suspend (target: SkyObject) -> SlewOutcome,
+    /** Arms the mount's own alignment for this many stars. Destructive -- see
+     *  [com.astrocompass.telescope.TelescopeConnection.beginAlignment]. */
+    onBeginMountAlignment: suspend (starCount: Int) -> Boolean,
+    /** Whether the mount says it is at home, or null while unknown -- see
+     *  [com.astrocompass.telescope.TelescopeConnection.readAtHome]. */
+    onReadAtHome: suspend () -> Boolean?,
+    onMoveHome: suspend () -> Unit,
+    /** Feeds the mount one alignment star, as of `capturedAtEpochMillis` -- fired on the confirming
+     *  tap, the one instant "the telescope is on this star" is true. */
+    onSyncTelescope: suspend (target: SkyObject, capturedAtEpochMillis: Long) -> SyncOutcome,
+    onSaveMountAlignmentModel: suspend () -> Boolean,
     onBack: () -> Unit,
     onOpenSettings: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    var starCount by remember { mutableStateOf(2) }
-    var points by remember { mutableStateOf(listOf<AlignmentPoint>()) }
     var pendingTarget by remember { mutableStateOf<StarObject?>(null) }
-    var mapMode by remember { mutableStateOf(true) }
+    var showList by remember { mutableStateOf(false) }
     var sortMode by remember { mutableStateOf(StarSortMode.MAGNITUDE) }
     var viewport by remember { mutableStateOf(SkyMapViewport.DEFAULT) }
+    // Every mount command is a round trip over a slow serial link; without this a second tap
+    // during one would queue a duplicate align point behind it.
+    var mountCommandInFlight by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+    val snackbarHostState = remember { SnackbarHostState() }
+
+    val alignsMount = guidingMode == GuidingMode.TELESCOPE
+    // Idempotent, so returning from Settings doesn't wipe the run -- see AlignmentSession.switchTo.
+    LaunchedEffect(guidingMode) {
+        session.switchTo(guidingMode)
+        pendingTarget = null
+    }
+
+    // Asking to start over. Deliberately screen-local rather than part of the session: losing it
+    // (a trip through Settings) falls back to the run the mount is actually in the middle of, which
+    // is the safe direction to fail -- the unsafe one would be offering Start for a mount that is
+    // already armed, and session.mountAlignmentActive stays true until a re-arm actually lands.
+    var restartRequested by remember { mutableStateOf(false) }
+    val startCardShowing = alignsMount && (!session.mountAlignmentActive || restartRequested)
+
+    // Polled, not read once: "Send home" is fire-and-forget and the slew takes seconds, so a single
+    // re-read would always land mid-slew and leave a red warning up that only clears by leaving the
+    // screen. Runs only while the Start card is the thing on screen -- the one moment it decides
+    // anything -- so this is not a second permanent command stream alongside the position poll.
+    var atHome by remember { mutableStateOf<Boolean?>(null) }
+    LaunchedEffect(startCardShowing) {
+        if (!startCardShowing) {
+            atHome = null
+            return@LaunchedEffect
+        }
+        while (true) {
+            atHome = onReadAtHome()
+            delay(HOME_STATUS_POLL_INTERVAL_MILLIS)
+        }
+    }
 
     // Derived, not state written from an effect: the solve is pure and instant, so the last
     // "Confirm sync" completes the alignment on its own instead of parking the user on a
     // "Compute" button. Solving at the final point's capture time rather than "now" keeps the
-    // model's timestamp on the same instant the fit actually describes.
-    val result = remember(points, starCount) {
-        if (points.size == starCount) AlignmentSolver.solve(points, points.last().capturedAtEpochMillis) else null
+    // model's timestamp on the same instant the fit actually describes. Telescope runs have no
+    // phone-side solve at all -- the model being built lives on the mount.
+    val phoneResult = remember(session.points, session.starCount, alignsMount) {
+        if (!alignsMount && session.points.size == session.starCount) {
+            AlignmentSolver.solve(session.points, session.points.last().capturedAtEpochMillis)
+        } else {
+            null
+        }
     }
 
     var now by remember { mutableStateOf(currentEpochMillis()) }
@@ -104,9 +205,25 @@ fun AlignmentScreen(
         }
     }
 
+    // Centering happens here, in the pick handler, rather than in an effect keyed on
+    // pendingTarget: a live recenter would fight every pan the user makes while the pick stands,
+    // which is exactly the overview the map is left usable for.
+    val pickStar: (StarObject) -> Unit = { star ->
+        val horizontal = star.currentHorizontal(location, currentEpochMillis())
+        viewport = viewport.copy(centerAzimuth = horizontal.azimuth, centerAltitude = horizontal.altitude)
+        pendingTarget = star
+        showList = false
+    }
+
     val catalogLoaded by catalogRepository.isLoaded.collectAsState()
-    val suggestions = remember(catalogLoaded, now, points) {
-        if (!catalogLoaded) emptyList() else suggestStars(catalogRepository, location, now, points.map { it.skyDirection })
+    val syncedNames = List(session.syncedCount) { syncedStarName(session, catalogRepository, it) }
+    val syncedDirections = if (alignsMount) {
+        session.mountAlignedStars.map { it.currentHorizontal(location, now).toEnu() }
+    } else {
+        session.points.map { it.skyDirection }
+    }
+    val suggestions = remember(catalogLoaded, now, session.syncedCount) {
+        if (!catalogLoaded) emptyList() else suggestStars(catalogRepository, location, now, syncedDirections)
     }
     val sortedSuggestions = remember(suggestions, sortMode) {
         when (sortMode) {
@@ -118,21 +235,52 @@ fun AlignmentScreen(
     // exists for suggestStars and the alignment countdown/age display, which want to be current to
     // the second, not for how often the map itself needs to be re-precessed.
     val snapshot = rememberSkyMapSnapshot(catalogRepository, location, catalogFilter = { it is StarObject })
-    val syncedMarkers = remember(points) {
-        points.map { point ->
-            SkyMapMarker(
-                direction = point.skyDirection,
-                color = OnTargetGreen,
-                label = catalogRepository.byId(point.targetId)?.displayName,
-            )
+    val syncedMarkers = syncedDirections.mapIndexed { index, direction ->
+        SkyMapMarker(direction = direction, color = OnTargetGreen, label = syncedNames.getOrNull(index))
+    }
+    val pendingMarker = pendingTarget?.let {
+        SkyMapMarker(
+            direction = it.currentHorizontal(location, now).toEnu(),
+            color = MaterialTheme.colorScheme.primary,
+            label = it.displayName,
+        )
+    }
+
+    // Both halves matter: with a pick pending the overlay's own buttons are the only way forward,
+    // and with the last star already synced there is nothing a further pick could feed. A mount run
+    // additionally has nothing to pick *into* until its sequence is armed. Gates the list the same
+    // way as the map, or the list would just be the other way in.
+    val canPickStar = pendingTarget == null &&
+        !session.isComplete &&
+        (!alignsMount || session.mountAlignmentActive)
+
+    val confirmPhoneSync: (StarObject) -> Unit = { target ->
+        onCapturePoint(target, AlignmentSource.MANUAL_SYNC, currentEpochMillis())?.let(session::addPoint)
+        pendingTarget = null
+    }
+    // Only clears the pick once the mount has actually taken the star: a refused point leaves the
+    // user exactly where they were, free to re-center and confirm again.
+    val confirmMountSync: (StarObject) -> Unit = { target ->
+        mountCommandInFlight = true
+        scope.launch {
+            when (onSyncTelescope(target, currentEpochMillis())) {
+                SyncOutcome.Synced -> {
+                    session.addMountAlignedStar(target)
+                    pendingTarget = null
+                }
+                SyncOutcome.Rejected -> snackbarHostState.showSnackbar("Mount refused ${target.displayName} as an alignment star")
+                SyncOutcome.NoConnection -> snackbarHostState.showSnackbar("Telescope not connected")
+            }
+            mountCommandInFlight = false
         }
     }
 
     Scaffold(
         modifier = modifier,
+        snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
             TopAppBar(
-                title = { Text("Align") },
+                title = { Text(if (alignsMount) "Align telescope" else "Align phone") },
                 navigationIcon = {
                     IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back") }
                 },
@@ -141,124 +289,231 @@ fun AlignmentScreen(
                 },
             )
         },
+        bottomBar = {
+            BottomAppBar {
+                Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    GuidingModeButton(
+                        mode = guidingMode,
+                        telescopeConnected = isTelescopeConnected,
+                        onModeChange = onGuidingModeChange,
+                    )
+                    VerticalDivider(Modifier.height(32.dp).padding(horizontal = 4.dp))
+                    if (alignsMount) {
+                        ToolbarActionButton(
+                            icon = Icons.Default.GpsFixed,
+                            label = "GOTO",
+                            enabled = pendingTarget != null,
+                            onClick = {
+                                val star = pendingTarget ?: return@ToolbarActionButton
+                                scope.launch {
+                                    val message = when (val outcome = onGoto(star)) {
+                                        is SlewOutcome.Rejected -> outcome.reason
+                                        SlewOutcome.NoConnection -> "Telescope not connected"
+                                        SlewOutcome.Started -> "Slewing to ${star.displayName}"
+                                    }
+                                    snackbarHostState.showSnackbar(message)
+                                }
+                            },
+                        )
+                    }
+                    if (alignsMount && session.mountAlignmentActive) {
+                        // Drops back to the Start card rather than re-arming straight away, so a
+                        // restart goes through the same at-home check as the first attempt --
+                        // re-arming is the only way out of a half-finished sequence (OnStep has no
+                        // cancel), and doing it from the wrong position is what made it wrong.
+                        ToolbarActionButton(
+                            icon = Icons.Default.RestartAlt,
+                            label = "Restart",
+                            enabled = !mountCommandInFlight,
+                            onClick = {
+                                pendingTarget = null
+                                restartRequested = true
+                            },
+                        )
+                    }
+                    Spacer(Modifier.weight(1f))
+                    ToolbarActionButton(
+                        icon = if (showList) Icons.Default.Map else Icons.AutoMirrored.Filled.List,
+                        label = if (showList) "Map" else "List",
+                        enabled = showList || canPickStar,
+                        onClick = { showList = !showList },
+                    )
+                }
+            }
+        },
     ) { padding ->
-        Column(Modifier.padding(padding).fillMaxSize().padding(16.dp)) {
-            SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
-                listOf(2, 3).forEachIndexed { index, count ->
-                    SegmentedButton(
-                        selected = starCount == count,
-                        onClick = {
-                            starCount = count
-                            points = points.take(count)
-                            pendingTarget = null
-                        },
-                        shape = androidx.compose.material3.SegmentedButtonDefaults.itemShape(index, 2),
-                        label = { Text("$count stars") },
-                    )
-                }
-            }
+        Box(Modifier.padding(padding).fillMaxSize()) {
+            SkyMap(
+                directions = snapshot.directions,
+                viewport = viewport,
+                onViewportChange = { viewport = it },
+                markers = syncedMarkers + listOfNotNull(pendingMarker, telescopeDirection?.let(SkyMapMarker::telescope)),
+                constellationLines = snapshot.constellationLines,
+                // Null whenever a pick would go nowhere (see canPickStar): the map stays pannable
+                // as an overview, it just stops being a picker.
+                onSelect = if (canPickStar) { obj -> (obj as? StarObject)?.let(pickStar) } else null,
+                modifier = Modifier.fillMaxSize(),
+            )
 
-            if (points.isNotEmpty()) {
-                Text(
-                    "Synced (${points.size}/$starCount)",
-                    style = MaterialTheme.typography.titleSmall,
-                    modifier = Modifier.padding(top = 16.dp),
-                )
-                points.forEachIndexed { index, point ->
-                    ListItem(
-                        headlineContent = { Text(catalogRepository.byId(point.targetId)?.displayName ?: point.targetId) },
-                        trailingContent = {
-                            IconButton(onClick = { points = points.toMutableList().also { it.removeAt(index) } }) {
-                                Icon(Icons.Default.Close, contentDescription = "Remove")
-                            }
-                        },
-                    )
-                }
-                HorizontalDivider(Modifier.padding(vertical = 8.dp))
-            }
+            AlignmentProgressOverlay(
+                starCount = session.starCount,
+                // Absent, not disabled, once the mount's sequence is armed -- see
+                // AlignmentSession.canChangeStarCount.
+                onStarCountChange = if (session.canChangeStarCount) {
+                    { count -> session.changeStarCount(count); pendingTarget = null }
+                } else {
+                    null
+                },
+                syncedNames = syncedNames,
+                // A mount's sequence is append-only: OnStep offers no "drop that star" command, so
+                // there is nothing to hang a remove button on.
+                onRemovePoint = if (alignsMount) null else session::removePointAt,
+                modifier = Modifier.align(Alignment.TopStart).padding(8.dp),
+            )
 
             val target = pendingTarget
+            val stepModifier = Modifier.align(Alignment.BottomCenter).fillMaxWidth()
             when {
-                result is AlignmentResult.Success ->
-                    AlignmentCompleteCard(result, onDone = { onSaveModel(result.model); onBack() })
+                alignsMount && session.isComplete -> MountAlignmentCompleteCard(
+                    starCount = session.starCount,
+                    busy = mountCommandInFlight,
+                    onSave = {
+                        mountCommandInFlight = true
+                        scope.launch {
+                            if (onSaveMountAlignmentModel()) {
+                                session.clear()
+                                onBack()
+                            } else {
+                                mountCommandInFlight = false
+                                snackbarHostState.showSnackbar("Mount refused to store the model — it stays active until power off")
+                            }
+                        }
+                    },
+                    modifier = stepModifier,
+                )
+
+                phoneResult is AlignmentResult.Success -> AlignmentCompleteCard(
+                    result = phoneResult,
+                    onDone = { onSaveModel(phoneResult.model); session.clear(); onBack() },
+                    modifier = stepModifier,
+                )
+
+                startCardShowing -> StartMountAlignmentCard(
+                    starCount = session.starCount,
+                    atHome = atHome,
+                    alreadyArmed = session.mountAlignmentActive,
+                    busy = mountCommandInFlight,
+                    onSendHome = {
+                        scope.launch {
+                            onMoveHome()
+                            snackbarHostState.showSnackbar("Sending the mount home…")
+                        }
+                    },
+                    // markMountAlignmentArmed only after the mount has taken the command, so the
+                    // app's idea of the run and the mount's never diverge -- including on a restart,
+                    // where the previous sequence stays the app's truth until this one replaces it.
+                    onStart = {
+                        mountCommandInFlight = true
+                        scope.launch {
+                            if (onBeginMountAlignment(session.starCount)) {
+                                session.markMountAlignmentArmed()
+                                restartRequested = false
+                            } else {
+                                snackbarHostState.showSnackbar("Mount refused to start a ${session.starCount}-star alignment")
+                            }
+                            mountCommandInFlight = false
+                        }
+                    },
+                    modifier = stepModifier,
+                )
 
                 target != null -> ConfirmSyncStep(
                     target = target,
                     location = location,
                     nowEpochMillis = now,
-                    existingPoints = points,
-                    onConfirm = {
-                        onCapturePoint(target, AlignmentSource.MANUAL_SYNC, now)?.let { points = points + it }
-                        pendingTarget = null
-                    },
+                    existingDirections = syncedDirections,
+                    alignsMount = alignsMount,
+                    busy = mountCommandInFlight,
+                    onConfirm = { if (alignsMount) confirmMountSync(target) else confirmPhoneSync(target) },
                     onPickDifferentStar = { pendingTarget = null },
+                    modifier = stepModifier,
                 )
 
-                result is AlignmentResult.Failure -> Column {
-                    Text(result.reason, color = MaterialTheme.colorScheme.error)
+                phoneResult is AlignmentResult.Failure -> StepCard(stepModifier) {
+                    Text(phoneResult.reason, color = MaterialTheme.colorScheme.error)
                     Text(
-                        "Remove one of the stars above, then pick a different one.",
+                        "Remove one of the synced stars, then pick a different one.",
                         style = MaterialTheme.typography.bodyMedium,
                         modifier = Modifier.padding(top = 8.dp),
                     )
                 }
 
-                else -> Column(Modifier.fillMaxWidth().weight(1f)) {
-                    Row(
-                        Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 4.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                    ) {
-                        Text("Pick a star to sync", style = MaterialTheme.typography.titleSmall)
-                        Row {
-                            IconButton(onClick = { mapMode = false }) {
-                                Icon(
-                                    Icons.AutoMirrored.Filled.List,
-                                    contentDescription = "List view",
-                                    tint = if (!mapMode) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                            }
-                            IconButton(onClick = { mapMode = true }) {
-                                Icon(
-                                    Icons.Default.Map,
-                                    contentDescription = "Map view",
-                                    tint = if (mapMode) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                            }
-                        }
-                    }
+                else -> StepCard(stepModifier) {
+                    Text("Pick a star to sync", style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        "Tap one on the map, or switch to the list of the brightest stars up right now.",
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                }
+            }
 
-                    if (mapMode) {
-                        SkyMap(
-                            directions = snapshot.directions,
-                            viewport = viewport,
-                            onViewportChange = { viewport = it },
-                            // Combined here rather than inside syncedMarkers' `remember(points)`,
-                            // which would freeze the mount's marker at its first report.
-                            markers = syncedMarkers + listOfNotNull(telescopeDirection?.let(SkyMapMarker::telescope)),
-                            constellationLines = snapshot.constellationLines,
-                            onSelect = { obj -> (obj as? StarObject)?.let { pendingTarget = it } },
-                            modifier = Modifier.fillMaxWidth().weight(1f),
-                        )
-                    } else {
-                        SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth().padding(bottom = 8.dp)) {
-                            StarSortMode.entries.forEachIndexed { index, mode ->
-                                SegmentedButton(
-                                    selected = sortMode == mode,
-                                    onClick = { sortMode = mode },
-                                    shape = androidx.compose.material3.SegmentedButtonDefaults.itemShape(index, StarSortMode.entries.size),
-                                    label = { Text("Sort: ${mode.label}") },
-                                )
-                            }
-                        }
-                        LazyColumn(contentPadding = PaddingValues(bottom = 24.dp)) {
-                            items(sortedSuggestions) { star ->
-                                val horizontal = star.currentHorizontal(location, now)
-                                ListItem(
-                                    headlineContent = { Text(star.displayName) },
-                                    supportingContent = { Text("mag ${formatDegrees(star.magnitude.toDouble())} · alt ${formatDegrees(horizontal.altitude.degrees)}°") },
-                                    modifier = Modifier.clickable { pendingTarget = star },
-                                )
-                            }
+            if (showList) {
+                StarListOverlay(
+                    stars = sortedSuggestions,
+                    location = location,
+                    nowEpochMillis = now,
+                    sortMode = sortMode,
+                    onSortModeChange = { sortMode = it },
+                    onPick = pickStar,
+                    modifier = Modifier.fillMaxSize(),
+                )
+            }
+        }
+    }
+}
+
+/** Whichever kind of evidence this run collects, the star's display name for slot [index]. */
+private fun syncedStarName(session: AlignmentSession, catalogRepository: CatalogRepository, index: Int): String =
+    session.mountAlignedStars.getOrNull(index)?.displayName
+        ?: session.points[index].let { catalogRepository.byId(it.targetId)?.displayName ?: it.targetId }
+
+/** The map's top-left overlay: how many stars this run uses, and which are already synced.
+ *  A null [onStarCountChange] or [onRemovePoint] renders the corresponding control as absent
+ *  rather than disabled -- both are cases where the action does not exist at all, not cases where
+ *  it is temporarily unavailable. */
+@Composable
+private fun AlignmentProgressOverlay(
+    starCount: Int,
+    onStarCountChange: ((Int) -> Unit)?,
+    syncedNames: List<String>,
+    onRemovePoint: ((Int) -> Unit)?,
+    modifier: Modifier = Modifier,
+) {
+    Column(modifier.mapOverlayScrim().padding(horizontal = 12.dp, vertical = 8.dp)) {
+        if (onStarCountChange != null) {
+            SingleChoiceSegmentedButtonRow {
+                listOf(2, 3).forEachIndexed { index, count ->
+                    SegmentedButton(
+                        selected = starCount == count,
+                        onClick = { onStarCountChange(count) },
+                        shape = SegmentedButtonDefaults.itemShape(index, 2),
+                        label = { Text("$count stars") },
+                    )
+                }
+            }
+        }
+        if (syncedNames.isNotEmpty()) {
+            Text(
+                "Synced ${syncedNames.size}/$starCount",
+                style = MaterialTheme.typography.titleSmall,
+                modifier = Modifier.padding(top = 8.dp),
+            )
+            syncedNames.forEachIndexed { index, name ->
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(name, style = MaterialTheme.typography.bodyMedium)
+                    if (onRemovePoint != null) {
+                        IconButton(onClick = { onRemovePoint(index) }) {
+                            Icon(Icons.Default.Close, contentDescription = "Remove")
                         }
                     }
                 }
@@ -267,95 +522,238 @@ fun AlignmentScreen(
     }
 }
 
-/** The "point, then confirm" step of the alignment wizard: the user centers the telescope on
- *  [target] before tapping confirm, rather than a single tap syncing immediately -- syncing the
- *  instant a star is picked, before the telescope is actually pointed at it, would capture a
- *  wrong sensor direction.
+/** The list alternative to picking off the map: the brightest stars up right now, laid over the
+ *  map rather than replacing it, so the map keeps its viewport and switching back is instant. */
+@Composable
+private fun StarListOverlay(
+    stars: List<StarObject>,
+    location: ObserverLocation,
+    nowEpochMillis: Long,
+    sortMode: StarSortMode,
+    onSortModeChange: (StarSortMode) -> Unit,
+    onPick: (StarObject) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Surface(modifier) {
+        Column(Modifier.padding(horizontal = 16.dp)) {
+            SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
+                StarSortMode.entries.forEachIndexed { index, mode ->
+                    SegmentedButton(
+                        selected = sortMode == mode,
+                        onClick = { onSortModeChange(mode) },
+                        shape = SegmentedButtonDefaults.itemShape(index, StarSortMode.entries.size),
+                        label = { Text("Sort: ${mode.label}") },
+                    )
+                }
+            }
+            LazyColumn(contentPadding = PaddingValues(bottom = 24.dp)) {
+                items(stars) { star ->
+                    val horizontal = star.currentHorizontal(location, nowEpochMillis)
+                    ListItem(
+                        headlineContent = { Text(star.displayName) },
+                        supportingContent = { Text("mag ${formatDegrees(star.magnitude.toDouble())} · alt ${formatDegrees(horizontal.altitude.degrees)}°") },
+                        modifier = Modifier.clickable { onPick(star) },
+                    )
+                }
+            }
+        }
+    }
+}
+
+/** Every step of the flow is a scrimmed panel pinned to the bottom of the map, so the sky above it
+ *  -- and the marker for whichever star the step is about -- stays visible throughout. */
+@Composable
+private fun StepCard(modifier: Modifier = Modifier, content: @Composable () -> Unit) {
+    Column(
+        modifier
+            .mapOverlayScrim(RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp))
+            .padding(16.dp),
+    ) {
+        content()
+    }
+}
+
+/** Arming the mount's alignment gets its own deliberate step rather than happening on the first
+ *  confirm, because the command behind it re-homes the mount, throws away its current model and
+ *  forces tracking on -- and the protocol has no way to take any of that back (see
+ *  [com.astrocompass.telescope.TelescopeConnection.beginAlignment]). Spelling out the
+ *  precondition is the whole point of the step: the mount is about to declare wherever it now
+ *  stands to be home. */
+@Composable
+private fun StartMountAlignmentCard(
+    starCount: Int,
+    atHome: Boolean?,
+    alreadyArmed: Boolean,
+    busy: Boolean,
+    onSendHome: () -> Unit,
+    onStart: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    StepCard(modifier) {
+        Text(
+            if (alreadyArmed) "Start the $starCount-star alignment over" else "Start a $starCount-star mount alignment",
+            style = MaterialTheme.typography.titleMedium,
+        )
+        Text(
+            "Starting declares wherever the mount is standing to be its home position, discards " +
+                "its current alignment model and turns tracking on. There is no undo.",
+            style = MaterialTheme.typography.bodyMedium,
+            modifier = Modifier.padding(top = 4.dp),
+        )
+        if (alreadyArmed) {
+            Text(
+                "The mount is still armed from the run in progress — starting replaces it, and " +
+                    "the stars it has already taken are discarded.",
+                style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.padding(top = 8.dp),
+            )
+        }
+        if (atHome == false) {
+            Text(
+                "The mount reports it is not at home. Start now and it will believe home is " +
+                    "wherever it is currently pointed — send it home first.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error,
+                modifier = Modifier.padding(top = 8.dp),
+            )
+        }
+        Row(
+            Modifier.fillMaxWidth().padding(top = 16.dp),
+            horizontalArrangement = Arrangement.Center,
+        ) {
+            OutlinedButton(onClick = onSendHome, enabled = !busy, modifier = Modifier.padding(end = 12.dp)) {
+                Text("Send home")
+            }
+            Button(onClick = onStart, enabled = !busy) { Text("Start") }
+        }
+    }
+}
+
+/** The "point, then confirm" step: the user centers the telescope on [target] before tapping
+ *  confirm, rather than a single tap syncing immediately -- syncing the instant a star is picked,
+ *  before the telescope is actually pointed at it, would record a wrong direction. Under
+ *  [alignsMount] that is still true after a GOTO: the slew gets close, but only the user's own
+ *  centering makes "the telescope is on this star" a fact worth handing the mount, so the
+ *  instruction says so rather than implying GOTO finished the job.
  *
- *  [existingPoints] drives two warnings that only the sky map's full-catalog picker can trigger --
- *  the list view's suggestions are already filtered clear of both. Neither blocks "Confirm sync":
- *  a below-horizon pick may just mean the telescope will be pointed there shortly, and the
- *  too-close warning only anticipates what [AlignmentSolver.solve] would reject outright anyway. */
+ *  [existingDirections] drives two warnings that only the sky map's full-catalog picker can
+ *  trigger -- the list view's suggestions are already filtered clear of both. Neither blocks
+ *  confirming: a below-horizon pick may just mean the telescope will be pointed there shortly, and
+ *  the too-close warning only anticipates what the fit would reject anyway. */
 @Composable
 private fun ConfirmSyncStep(
     target: StarObject,
     location: ObserverLocation,
     nowEpochMillis: Long,
-    existingPoints: List<AlignmentPoint>,
+    existingDirections: List<Vector3>,
+    alignsMount: Boolean,
+    busy: Boolean,
     onConfirm: () -> Unit,
     onPickDifferentStar: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val horizontal = target.currentHorizontal(location, nowEpochMillis)
     val direction = horizontal.toEnu()
-    val tooCloseTo = existingPoints.firstOrNull { direction.angleTo(it.skyDirection) < AlignmentSolver.MIN_STAR_SEPARATION }
-    Card(modifier.fillMaxWidth()) {
-        Column(Modifier.padding(16.dp)) {
-            Text("Point at ${target.displayName}", style = MaterialTheme.typography.titleMedium)
+    val tooClose = existingDirections.any { direction.angleTo(it) < AlignmentSolver.MIN_STAR_SEPARATION }
+    StepCard(modifier) {
+        Text("Point at ${target.displayName}", style = MaterialTheme.typography.titleMedium)
+        Text(
+            "alt ${formatDegrees(horizontal.altitude.degrees)}° · az ${formatDegrees(horizontal.azimuth.degrees)}°",
+            style = MaterialTheme.typography.bodyMedium,
+            modifier = Modifier.padding(top = 4.dp, bottom = 4.dp),
+        )
+        if (horizontal.altitude.degrees < 0) {
             Text(
-                "alt ${formatDegrees(horizontal.altitude.degrees)}° · az ${formatDegrees(horizontal.azimuth.degrees)}°",
-                style = MaterialTheme.typography.bodyMedium,
-                modifier = Modifier.padding(top = 4.dp, bottom = 4.dp),
+                "This star is below the horizon right now.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error,
+                modifier = Modifier.padding(bottom = 4.dp),
             )
-            if (horizontal.altitude.degrees < 0) {
-                Text(
-                    "This star is below the horizon right now.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.error,
-                    modifier = Modifier.padding(bottom = 4.dp),
-                )
-            }
-            if (tooCloseTo != null) {
-                Text(
+        }
+        if (tooClose) {
+            // Only the phone solver actually rejects this (AlignmentSolver.MIN_STAR_SEPARATION);
+            // OnStep's own addStar enforces no separation at all, so for a mount run the same
+            // closeness is a quality hint rather than a predicted refusal.
+            Text(
+                if (alignsMount) {
+                    "Within ${AlignmentSolver.MIN_STAR_SEPARATION.degrees.toInt()}° of an already-synced star -- " +
+                        "stars further apart give the mount a better model."
+                } else {
                     "Less than ${AlignmentSolver.MIN_STAR_SEPARATION.degrees.toInt()}° from an already-synced star -- " +
-                        "the fit will likely be rejected.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.error,
-                    modifier = Modifier.padding(bottom = 4.dp),
-                )
-            }
-            Text(
-                "Center the telescope on ${target.displayName}, then confirm.",
-                style = MaterialTheme.typography.bodyMedium,
-                modifier = Modifier.padding(bottom = 16.dp),
+                        "the fit will likely be rejected."
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error,
+                modifier = Modifier.padding(bottom = 4.dp),
             )
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
-                OutlinedButton(onClick = onPickDifferentStar, modifier = Modifier.padding(end = 12.dp)) {
-                    Text("Choose a different star")
-                }
-                Button(onClick = onConfirm) { Text("Confirm sync") }
+        }
+        Text(
+            if (alignsMount) {
+                "Use GOTO to get close, then center ${target.displayName} in the eyepiece by hand and confirm."
+            } else {
+                "Center the telescope on ${target.displayName}, then confirm."
+            },
+            style = MaterialTheme.typography.bodyMedium,
+            modifier = Modifier.padding(bottom = 16.dp),
+        )
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
+            OutlinedButton(
+                onClick = onPickDifferentStar,
+                enabled = !busy,
+                modifier = Modifier.padding(end = 12.dp),
+            ) {
+                Text("Choose a different star")
             }
+            Button(onClick = onConfirm, enabled = !busy) { Text("Confirm sync") }
         }
     }
 }
 
-/** The last sync's confirmation: the model is already solved by the time this appears, so the
- *  only remaining decision is whether to keep it -- [onDone] saves it and leaves the screen. */
+/** The last phone sync's confirmation: the model is already solved by the time this appears, so
+ *  the only remaining decision is whether to keep it -- [onDone] saves it and leaves the screen. */
 @Composable
-private fun AlignmentCompleteCard(result: AlignmentResult.Success, onDone: () -> Unit) {
-    Card(Modifier.fillMaxWidth().padding(bottom = 16.dp)) {
-        Column(Modifier.padding(16.dp)) {
-            Row {
-                Icon(Icons.Default.Check, contentDescription = null)
-                Text(" Alignment complete", style = MaterialTheme.typography.titleMedium)
-            }
-            Text("RMS residual: ${formatDegrees(result.model.rmsResidualDegrees)}°")
-            Row(Modifier.fillMaxWidth().padding(top = 12.dp), horizontalArrangement = Arrangement.Center) {
-                Button(onClick = onDone) { Text("OK") }
-            }
+private fun AlignmentCompleteCard(result: AlignmentResult.Success, onDone: () -> Unit, modifier: Modifier = Modifier) {
+    StepCard(modifier) {
+        Row {
+            Icon(Icons.Default.Check, contentDescription = null)
+            Text(" Phone alignment complete", style = MaterialTheme.typography.titleMedium)
+        }
+        Text("RMS residual: ${formatDegrees(result.model.rmsResidualDegrees)}°")
+        Row(Modifier.fillMaxWidth().padding(top = 12.dp), horizontalArrangement = Arrangement.Center) {
+            Button(onClick = onDone) { Text("OK") }
+        }
+    }
+}
+
+/** The mount computed and applied its own model on the last accepted star, so there is no residual
+ *  to show and nothing to approve -- the one thing left is [onSave], which persists it so it
+ *  survives the next power cycle. */
+@Composable
+private fun MountAlignmentCompleteCard(starCount: Int, busy: Boolean, onSave: () -> Unit, modifier: Modifier = Modifier) {
+    StepCard(modifier) {
+        Row {
+            Icon(Icons.Default.Check, contentDescription = null)
+            Text(" Telescope aligned on $starCount stars", style = MaterialTheme.typography.titleMedium)
+        }
+        Text(
+            "The model is already in use. Store it so the mount keeps it after power off.",
+            style = MaterialTheme.typography.bodyMedium,
+        )
+        Row(Modifier.fillMaxWidth().padding(top = 12.dp), horizontalArrangement = Arrangement.Center) {
+            Button(onClick = onSave, enabled = !busy) { Text("Store on mount") }
         }
     }
 }
 
 /** The brightest currently-visible stars, sorted brightest-first. Only excludes stars too close
- *  to an already-*confirmed* point -- [AlignmentSolver] itself rejects any too-close pair at
- *  compute time, so suggestions don't also need to be mutually far apart from each other, which
- *  would needlessly shrink a list meant to offer real choice. */
+ *  to an already-*confirmed* point -- the fit itself rejects any too-close pair anyway, so
+ *  suggestions don't also need to be mutually far apart from each other, which would needlessly
+ *  shrink a list meant to offer real choice. */
 private fun suggestStars(
     catalogRepository: CatalogRepository,
     location: ObserverLocation,
     nowEpochMillis: Long,
-    alreadyChosen: List<com.astrocompass.astro.Vector3>,
+    alreadyChosen: List<Vector3>,
 ): List<StarObject> {
     return catalogRepository.all
         .filterIsInstance<StarObject>()

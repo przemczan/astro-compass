@@ -21,6 +21,43 @@ class Lx200CodecTest {
         assertEquals(":GD#", Lx200Codec.getDeclination())
         assertEquals(":MS#", Lx200Codec.slewToTarget())
         assertEquals(":Q#", Lx200Codec.abortSlew())
+        assertEquals(":CM#", Lx200Codec.syncToTarget())
+        assertEquals(":AW#", Lx200Codec.writeAlignmentModel())
+        assertEquals(":hC#", Lx200Codec.moveToHome())
+    }
+
+    /** `H` is at-home; the lowercase `h` OnStep uses for *homing in progress* must not match, and
+     *  neither may any other flag in the string. */
+    @Test
+    fun readsAtHomeFromTheStatusFlags() {
+        assertTrue(Lx200Codec.parseAtHome("nNpHF"))
+        assertFalse(Lx200Codec.parseAtHome("nNph"))
+        assertFalse(Lx200Codec.parseAtHome("NpF"))
+        assertFailsWith<IllegalArgumentException> { Lx200Codec.parseAtHome("  ") }
+    }
+
+    @Test
+    fun encodesTheStarCountIntoTheAlignmentCommand() {
+        assertEquals(":A2#", Lx200Codec.beginAlignment(2))
+        assertEquals(":A3#", Lx200Codec.beginAlignment(3))
+    }
+
+    /** A count outside 1-9 has no single-digit encoding, so it would silently go out as something
+     *  else entirely (`:A10#` parses as a 1-star align with a stray parameter). */
+    @Test
+    fun rejectsAnUnencodableStarCount() {
+        assertFailsWith<IllegalArgumentException> { Lx200Codec.beginAlignment(0) }
+        assertFailsWith<IllegalArgumentException> { Lx200Codec.beginAlignment(10) }
+    }
+
+    /** OnStepX answers `:CM#` with `N/A` on success and `E1`..`E9` on refusal -- nothing else
+     *  counts as accepted, including the `1` every Set-command ack uses. */
+    @Test
+    fun readsSyncAcceptanceFromTheReplyBody() {
+        assertTrue(Lx200Codec.parseSyncAccepted("N/A"))
+        assertFalse(Lx200Codec.parseSyncAccepted("E1"))
+        assertFalse(Lx200Codec.parseSyncAccepted("E9"))
+        assertFalse(Lx200Codec.parseSyncAccepted("1"))
     }
 
     @Test

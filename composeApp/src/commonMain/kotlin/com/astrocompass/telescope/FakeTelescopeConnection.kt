@@ -24,6 +24,20 @@ class FakeTelescopeConnection : TelescopeConnection {
     var abortCalled: Boolean = false
         private set
 
+    var syncOutcome: SyncOutcome = SyncOutcome.Synced
+    var lastSyncTarget: EquatorialCoordinates? = null
+        private set
+
+    var reportedAtHome: Boolean? = true
+    var moveToHomeCalled: Boolean = false
+        private set
+
+    var alignmentAccepted: Boolean = true
+    var lastBeginAlignmentStarCount: Int? = null
+        private set
+    var alignmentModelSaved: Boolean = false
+        private set
+
     var trackingAccepted: Boolean = true
     var reportedTrackingEnabled: Boolean? = true
     var lastSlewRatePreset: SlewRatePreset? = null
@@ -56,6 +70,27 @@ class FakeTelescopeConnection : TelescopeConnection {
     override suspend fun slewTo(target: EquatorialCoordinates): SlewOutcome {
         lastSlewTarget = target
         return slewOutcome
+    }
+
+    override suspend fun beginAlignment(starCount: Int): Boolean {
+        lastBeginAlignmentStarCount = starCount
+        return alignmentAccepted
+    }
+
+    override suspend fun readAtHome(): Boolean? = reportedAtHome
+
+    override suspend fun moveToHome() {
+        moveToHomeCalled = true
+    }
+
+    override suspend fun saveAlignmentModel(): Boolean {
+        alignmentModelSaved = alignmentAccepted
+        return alignmentAccepted
+    }
+
+    override suspend fun syncTo(target: EquatorialCoordinates): SyncOutcome {
+        lastSyncTarget = target
+        return syncOutcome
     }
 
     override suspend fun abortSlew() {

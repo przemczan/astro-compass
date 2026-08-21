@@ -79,6 +79,7 @@ import com.astrocompass.telescope.SlewOutcome
 import com.astrocompass.telescope.SlewRatePreset
 import com.astrocompass.ui.components.ArrowIndicator
 import com.astrocompass.ui.components.DeltaBar
+import com.astrocompass.ui.components.GuidingModeButton
 import com.astrocompass.ui.components.MAP_ZOOM_STEP_FACTOR
 import com.astrocompass.ui.components.MapFollowZoomControls
 import com.astrocompass.ui.components.mapOverlayScrim
@@ -159,6 +160,11 @@ fun GuidanceScreen(
     onNextObject: () -> Unit = {},
     onPreviousObject: () -> Unit = {},
     onOpenWizardOptions: () -> Unit = {},
+    /** One step back up the wizard's stack, to the object list -- what the top bar's arrow does,
+     *  matching system Back. Options is a step *forward* from here (the toolbar's own button), and
+     *  deliberately not where the arrow leads: a Back that reached Options, whose own Back returned
+     *  here, would be a loop with no way out. */
+    onBackToObjectList: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val pointingReady by pointingSource.isReady.collectAsState()
@@ -246,8 +252,8 @@ fun GuidanceScreen(
                 title = { Text(target.displayName) },
                 navigationIcon = {
                     if (wizardProgress != null) {
-                        IconButton(onClick = onOpenWizardOptions) {
-                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back to Night Wizard options")
+                        IconButton(onClick = onBackToObjectList) {
+                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back to the object list")
                         }
                     }
                 },
@@ -493,37 +499,6 @@ fun GuidanceScreen(
             trackingError = trackingError,
             onDismiss = { showTelescopeOptions = false },
         )
-    }
-}
-
-/** The mode picker sits at the far left of the toolbar, mirroring Exit at the far right: both stay
- *  available whatever else the screen is doing, unlike the mode-specific actions between them.
- *  Deliberately outside the `showGuidanceActions` gate -- a mount that never reports a position is
- *  precisely when someone needs to get back to [GuidingMode.MANUAL]. */
-@Composable
-private fun GuidingModeButton(
-    mode: GuidingMode,
-    telescopeConnected: Boolean,
-    onModeChange: (GuidingMode) -> Unit,
-) {
-    var expanded by remember { mutableStateOf(false) }
-    Box {
-        ToolbarActionButton(icon = Icons.Default.SwapHoriz, label = mode.label, onClick = { expanded = true })
-        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
-            for (option in GuidingMode.entries) {
-                DropdownMenuItem(
-                    text = { Text(option.label) },
-                    enabled = option != GuidingMode.TELESCOPE || telescopeConnected,
-                    trailingIcon = {
-                        if (option == mode) Icon(Icons.Default.Check, contentDescription = "Selected")
-                    },
-                    onClick = {
-                        onModeChange(option)
-                        expanded = false
-                    },
-                )
-            }
-        }
     }
 }
 

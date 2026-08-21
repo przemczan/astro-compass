@@ -38,6 +38,10 @@ fun NightWizardListScreen(
     objects: List<SkyObject>,
     location: ObserverLocation,
     startEpochMillis: Long,
+    /** True once the run has a position to come back to -- Back from guiding lands here, and
+     *  restarting the night from the first object because the button only knew how to say "Start"
+     *  would silently throw that position away. */
+    isResuming: Boolean,
     onStart: () -> Unit,
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
@@ -84,7 +88,7 @@ fun NightWizardListScreen(
             }
 
             Row(Modifier.fillMaxWidth().padding(16.dp), horizontalArrangement = Arrangement.Center) {
-                Button(onClick = onStart) { Text("Start") }
+                Button(onClick = onStart) { Text(if (isResuming) "Resume" else "Start") }
             }
         }
     }

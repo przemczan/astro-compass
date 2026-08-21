@@ -15,7 +15,7 @@ import kotlinx.coroutines.flow.stateIn
  *
  * Deliberately not a readiness-based fallback: [GuidingMode.TELESCOPE] with a mount that hasn't
  * reported a position yet must stay unready and say so, not quietly serve phone-sensor pointing
- * under a Telescope label. Falling back to [GuidingMode.MANUAL] when there is no mount at all is
+ * under a Telescope label. Falling back to [GuidingMode.PHONE] when there is no mount at all is
  * [com.astrocompass.AppContainer.guidingMode]'s job, upstream of this.
  */
 class SelectablePointingSource(

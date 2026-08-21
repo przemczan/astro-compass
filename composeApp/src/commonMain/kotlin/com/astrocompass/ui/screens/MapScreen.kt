@@ -47,11 +47,13 @@ import com.astrocompass.astro.time.currentEpochMillis
 import com.astrocompass.catalog.CatalogRepository
 import com.astrocompass.catalog.MapObjectFilter
 import com.astrocompass.catalog.SkyObject
+import com.astrocompass.guiding.GuidingMode
 import com.astrocompass.guiding.SkyPointingSource
 import com.astrocompass.guiding.currentHorizontal
 import com.astrocompass.location.ObserverLocation
 import com.astrocompass.ui.BackHandler
 import com.astrocompass.ui.components.MAP_ZOOM_STEP_FACTOR
+import com.astrocompass.ui.components.GuidingModeButton
 import com.astrocompass.ui.components.MapFilterSheet
 import com.astrocompass.ui.components.MapFollowZoomControls
 import com.astrocompass.ui.components.SkyMap
@@ -86,6 +88,12 @@ fun MapScreen(
     telescopeDirection: Vector3?,
     isStarAligned: Boolean,
     isTelescopeConnected: Boolean,
+    /** Which instrument the app is currently working through. Offered here, not just on the
+     *  Guidance and Alignment screens, because it changes what most of the app means -- and
+     *  because the alignment chip beside it would otherwise report the phone's alignment to
+     *  someone whose pointing comes entirely from a mount. */
+    guidingMode: GuidingMode,
+    onGuidingModeChange: (GuidingMode) -> Unit,
     selectedTarget: SkyObject?,
     onSelectTarget: (SkyObject) -> Unit,
     onGoto: () -> Unit,
@@ -131,15 +139,30 @@ fun MapScreen(
         bottomBar = {
             BottomAppBar {
                 Spacer(Modifier.weight(1f))
+                GuidingModeButton(
+                    mode = guidingMode,
+                    telescopeConnected = isTelescopeConnected,
+                    onModeChange = onGuidingModeChange,
+                )
                 ToolbarActionButton(icon = Icons.Default.Visibility, label = "Filter", onClick = { showFilterSheet = true })
+                // "Not aligned" is a claim about the *phone's* star fit, and only Phone mode is
+                // driven by it -- under Telescope mode the mount supplies pointing on its own, so
+                // the chip drops to a neutral "Align" rather than nagging about a model nothing is
+                // using. Whether the mount itself carries a model is not something the app can ask.
+                val phoneAlignmentMatters = guidingMode == GuidingMode.PHONE
+                val needsAlignment = phoneAlignmentMatters && !isStarAligned
                 ToolbarActionButton(
                     icon = Icons.Default.Explore,
-                    label = if (isStarAligned) "Aligned" else "Not aligned",
+                    label = when {
+                        !phoneAlignmentMatters -> "Align"
+                        isStarAligned -> "Aligned"
+                        else -> "Not aligned"
+                    },
                     onClick = onOpenAlignment,
                     // Flags that action's still needed -- a fresh "not aligned yet" state, not an
                     // error, so a neutral "needs attention" tone (primary), not error/warning ones.
-                    containerColor = if (isStarAligned) null else MaterialTheme.colorScheme.primaryContainer,
-                    contentColor = if (isStarAligned) LocalContentColor.current else MaterialTheme.colorScheme.onPrimaryContainer,
+                    containerColor = if (needsAlignment) MaterialTheme.colorScheme.primaryContainer else null,
+                    contentColor = if (needsAlignment) MaterialTheme.colorScheme.onPrimaryContainer else LocalContentColor.current,
                 )
                 ToolbarActionButton(icon = Icons.Default.AutoAwesome, label = "Night wizard", onClick = onOpenNightWizard)
                 ToolbarActionButton(

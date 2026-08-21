@@ -44,6 +44,7 @@ import com.astrocompass.telescope.Lx200Codec
 import com.astrocompass.telescope.Lx200TelescopeConnection
 import com.astrocompass.telescope.SlewOutcome
 import com.astrocompass.telescope.SlewRatePreset
+import com.astrocompass.telescope.SyncOutcome
 import com.astrocompass.telescope.TcpTelescopeTransport
 import com.astrocompass.telescope.TelescopeConnection
 import com.astrocompass.telescope.TelescopeConnectionState
@@ -140,7 +141,7 @@ class AppContainer(
     private val selectedGuidingMode = MutableStateFlow(GuidingMode.TELESCOPE)
 
     /** [selectedGuidingMode] resolved against the live connection: [GuidingMode.TELESCOPE] is
-     *  meaningless without a mount, so it degrades to [GuidingMode.MANUAL] whenever one isn't
+     *  meaningless without a mount, so it degrades to [GuidingMode.PHONE] whenever one isn't
      *  connected.
      *
      *  Derived rather than written back on connect/disconnect. A collector would have to catch the
@@ -150,8 +151,8 @@ class AppContainer(
      *  reconnect. Deriving it does both correctly for free. */
     val guidingMode: StateFlow<GuidingMode> =
         combine(selectedGuidingMode, telescopeConnection.state) { mode, connectionState ->
-            if (connectionState is TelescopeConnectionState.Connected) mode else GuidingMode.MANUAL
-        }.stateIn(scope, SharingStarted.Eagerly, GuidingMode.MANUAL)
+            if (connectionState is TelescopeConnectionState.Connected) mode else GuidingMode.PHONE
+        }.stateIn(scope, SharingStarted.Eagerly, GuidingMode.PHONE)
 
     /** Whatever [guidingMode] currently names -- what
      *  [MapScreen][com.astrocompass.ui.screens.MapScreen] and
@@ -341,6 +342,29 @@ class AppContainer(
     }
 
     suspend fun abortTelescopeSlew() = telescopeConnection.abortSlew()
+
+    /** Arms the mount's own multi-star alignment -- see [TelescopeConnection.beginAlignment] for
+     *  what that does to the mount before any star is added. */
+    suspend fun beginTelescopeAlignment(starCount: Int): Boolean =
+        telescopeConnection.beginAlignment(starCount)
+
+    /** Contributes [target] as one point of the alignment armed by [beginTelescopeAlignment] --
+     *  or, with none armed, corrects the mount's pointing origin outright. Same command either
+     *  way; see [TelescopeConnection.syncTo].
+     *
+     *  [nowEpochMillis] must be the instant the user confirmed the star was centered, for the same
+     *  reason [AlignmentPoint] fixes its own capture time -- see that class's doc. */
+    suspend fun syncTelescopeTo(target: SkyObject, nowEpochMillis: Long): SyncOutcome =
+        telescopeConnection.syncTo(target.currentEquatorial(nowEpochMillis))
+
+    /** Whether the mount says it is at home -- the precondition [beginTelescopeAlignment] silently
+     *  assumes. Null when there's no connection or the mount didn't answer. */
+    suspend fun readTelescopeAtHome(): Boolean? = telescopeConnection.readAtHome()
+
+    suspend fun moveTelescopeHome() = telescopeConnection.moveToHome()
+
+    /** Persists the model the last [syncTelescopeTo] of an alignment run completed. */
+    suspend fun saveTelescopeAlignmentModel(): Boolean = telescopeConnection.saveAlignmentModel()
 
     /** Persists the GOTO speed and pushes it at the mount right away; also re-asserted by
      *  [slewTelescopeTo] and [connectTelescope]. */

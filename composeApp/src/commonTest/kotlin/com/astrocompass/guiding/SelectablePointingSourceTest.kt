@@ -20,7 +20,7 @@ class SelectablePointingSourceTest {
     fun manualModeServesThePhoneSourceEvenWithAReadyTelescope() = runTest {
         val telescope = telescopeSource().apply { setReady(true); setDirection(TELESCOPE_DIRECTION) }
         val phone = FakeSkyPointingSource().apply { setReady(true); setDirection(PHONE_DIRECTION) }
-        val source = SelectablePointingSource(backgroundScope, MutableStateFlow(GuidingMode.MANUAL), telescope, phone)
+        val source = SelectablePointingSource(backgroundScope, MutableStateFlow(GuidingMode.PHONE), telescope, phone)
         runCurrent()
 
         assertEquals(PHONE_DIRECTION, source.currentSkyDirection.value)
@@ -60,7 +60,7 @@ class SelectablePointingSourceTest {
         val source = SelectablePointingSource(backgroundScope, mode, telescope, phone)
         runCurrent()
 
-        mode.value = GuidingMode.MANUAL
+        mode.value = GuidingMode.PHONE
         runCurrent()
 
         assertEquals(PHONE_DIRECTION, source.currentSkyDirection.value)

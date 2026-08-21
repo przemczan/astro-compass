@@ -61,7 +61,7 @@ All application code lives in `composeApp/src/`, a single Gradle module with thr
 | `location/` | `ObserverLocation`, `LocationProvider` interface, `LocationResolver` (manual-override-wins-over-GPS), `MagneticDeclinationProvider` interface |
 | `guiding/` | `TelescopeAxis`, `AbsoluteReference` (+ `AlignmentAbsoluteReference`, `CompassAbsoluteReference`, `PrioritizedAbsoluteReference`), `PointingService` (sensor + reference fusion), `GuidanceCalculator`, `CurrentPosition` (target alt/az right now) |
 | `settings/` | `AppPreferences` — multiplatform-settings-backed, hand-rolled reactive (`MutableStateFlow` seeded from storage + setter that persists) |
-| `ui/screens/` | `SearchScreen`, `GuidanceScreen`, `AlignmentScreen`, `SettingsScreen` |
+| `ui/screens/` | `SearchScreen`, `GuidanceScreen`, `AlignmentScreen` (+ `AlignmentSession`, its hoisted run state), `SettingsScreen` |
 | `ui/components/` | `ArrowIndicator`, `DeltaBar`, `SkyMap` (pannable/zoomable alt-az chart) |
 | `ui/skymap/` | `SkyMapViewport` (pan/zoom state), `SkyMapScene` (projection/culling/hit-test), `SkyMapDirectionCache` (per-tick catalog + constellation-line ENU snapshot) -- `SkyMap`'s non-Composable backing logic, kept separately unit-testable |
 | `ui/theme/` | `GuiderTheme`, `AppTheme` (Light/Dark/Night) |
@@ -79,6 +79,40 @@ path; `AlignmentScreen` walks the user through syncs one star at a time (pick a 
 telescope at it, confirm), never syncing on the tap that picks the star. The last confirm solves
 immediately and shows the RMS with an OK that saves and closes — there is no separate "compute"
 step, and the solve is a `remember`-derived value rather than an effect writing state.
+
+The screen is a sky map with every step of that flow overlaid on it — picking, confirming, the
+failure notice, the finished-fit card — rather than a `when` that swaps the map out. Picking a star
+recenters the viewport on it and drops `SkyMap`'s `onSelect` to null, so the map stays pannable as
+an overview while only the pending overlay's own buttons can change or commit the pick. Its bottom
+toolbar carries the same `GuidingModeButton` as `GuidanceScreen`, and the mode is one app-wide
+setting, not per-screen.
+
+**`GuidingMode` picks which instrument the run aligns — never both.** `PHONE` fits the phone's
+`AlignmentModel` as above and never touches the mount. `TELESCOPE` drives OnStep's own stateful
+alignment and captures no sensor reading at all: with the phone in the user's hand rather than on
+the telescope, a sensor direction taken at confirm time describes nothing. That sequence is
+`:A<n>#` to arm (a deliberate "Start" step, because it re-homes the mount, discards its model and
+forces tracking on, and the protocol has no cancel), then one `:CM#` per confirmed star, then
+`:AW#` to persist. `:CM#` is used rather than `:A+#` because it passes `sync = true` in OnStep's
+`alignAddStar`, taking the point from the `:Sr`/`:Sd` target just set instead of whatever a prior
+`:MS#` slew left behind — so a confirm without a GOTO in front of it is still correct.
+
+`:A<n>#` runs `home.reset()`, which declares wherever the mount is standing to be home — start it
+off-home and the mount's reported position jumps to home's coordinates (az 0 / alt 0 on an alt-az)
+and every later point is built on that fiction. The Start card therefore reads `:GU#`'s `H` flag
+(`Lx200Codec.parseAtHome`) and offers `:hC#` "Send home" beside Start, polling that flag while it
+is showing so a slew clears the warning on its own. Restart brings the same Start card back rather
+than re-arming immediately, so a second attempt goes through the same check — and
+`mountAlignmentActive` stays true until a re-arm actually lands, since the protocol has no cancel
+and the mount stays armed regardless of what the app does.
+
+The run lives in `AlignmentSession`, owned by `GuiderApp`, not remembered inside the screen: the
+screen's own Settings button tears it down (`showSettings` is matched ahead of `showAlignment`),
+and an armed mount sequence that the app forgot would offer "Start" again — re-homing a mount two
+stars into a good run. For the same reason the two modes keep entirely separate progress (star
+counts included) and switching between them discards neither: `guidingMode` derives to `PHONE` the
+instant a link drops, so clearing on a mode change would wipe the memory of an armed mount on any
+Bluetooth blip.
 
 `AlignmentSolver.resync()` is the separate one-tap drift remedy behind the Guidance screen's
 "Sync on this object": it corrects only yaw on top of an existing 2-3 star model rather than
@@ -154,6 +188,11 @@ Stock **Material 3** — prefer default component styling over custom looks.
   at the eyepiece) — everywhere else, colors come from `MaterialTheme.colorScheme`.
 - **Action buttons** (Save / Sync / etc.) are wrap-content, centered — `Row(Modifier.fillMaxWidth(),
   horizontalArrangement = Arrangement.Center)`.
+- **`GuidingMode` is app-wide and surfaced app-wide** — the same `GuidingModeButton` sits in
+  `MapScreen`'s, `GuidanceScreen`'s and `AlignmentScreen`'s bottom toolbars, all writing the one
+  `AppContainer.guidingMode`. Anything reporting the *phone's* alignment state must gate on the
+  mode: `MapScreen`'s chip says "Not aligned" only under `PHONE`, since under `TELESCOPE` the
+  mount supplies pointing and a phone fit nothing uses is not worth nagging about.
 - **Location is a hard prerequisite** — Search, Guidance, and Alignment all gate on
   `LocationResolver.resolved` being non-null rather than rendering altitudes from a silent default.
 

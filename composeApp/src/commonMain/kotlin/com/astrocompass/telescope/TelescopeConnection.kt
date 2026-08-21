@@ -35,6 +35,15 @@ sealed interface SlewOutcome {
     data object NoConnection : SlewOutcome
 }
 
+/** Outcome of [TelescopeConnection.syncTo]. Separate from [SlewOutcome] because a refusal carries
+ *  no mount-supplied text to show -- OnStepX answers `:CM#` with a bare `E1`..`E9` code, not a
+ *  message (see [Lx200Codec.parseSyncAccepted]). */
+sealed interface SyncOutcome {
+    data object Synced : SyncOutcome
+    data object Rejected : SyncOutcome
+    data object NoConnection : SyncOutcome
+}
+
 /** One step of the mount-sync sequence [Lx200TelescopeConnection.connect] runs automatically after
  *  a successful connect (see [TelescopeConnection.mountSyncResults]). [MountSyncStepOutcome.Skipped]
  *  is distinct from [MountSyncStepOutcome.Failed]: it means the step was deliberately not
@@ -103,6 +112,39 @@ interface TelescopeConnection {
      *  caller today gets this for free from [com.astrocompass.catalog.SkyObject.equatorialAt]. */
     suspend fun slewTo(target: EquatorialCoordinates): SlewOutcome
     suspend fun abortSlew()
+
+    /** Arms an [starCount]-star alignment sequence, returning whether the mount accepted it --
+     *  false also when there's no connection. Every [syncTo] after this contributes one point to
+     *  the model instead of correcting the pointing origin, until [starCount] of them have landed.
+     *
+     *  **Destructive and un-abortable**: it resets the mount's home position (so the mount must
+     *  physically be at home), discards its current model, and forces tracking on. The protocol
+     *  offers no cancel -- see [Lx200Codec.beginAlignment]. */
+    suspend fun beginAlignment(starCount: Int): Boolean
+
+    /** Whether the mount reports itself at its home position, or null with no connection or no
+     *  answer. Read on demand, only while [com.astrocompass.ui.screens.AlignmentScreen] is offering
+     *  to arm an alignment -- that is the one moment it decides anything, since [beginAlignment]
+     *  redefines home as wherever the mount happens to be standing. */
+    suspend fun readAtHome(): Boolean?
+
+    /** Slews the mount to its home position. Fire-and-forget, with no success/failure to report --
+     *  OnStep answers `:hC#` with nothing at all. A no-op without a connection. */
+    suspend fun moveToHome()
+
+    /** Persists a completed alignment model to the mount's non-volatile storage, returning whether
+     *  the mount accepted it -- false also when there's no connection. Worth surfacing when it
+     *  fails: the model is still live, it just won't survive a power cycle. */
+    suspend fun saveAlignmentModel(): Boolean
+
+    /** Tells the mount it is *already* pointed at [target] (of-date, same as [slewTo]). Only
+     *  meaningful the instant the user has actually centered the star, which is why the alignment
+     *  flow issues it on the confirming tap rather than when the finished model is saved.
+     *
+     *  Its effect depends on whether [beginAlignment] has armed a sequence: outside one it
+     *  corrects the mount's pointing origin, inside one it adds one point to the model being
+     *  built. That is one command with two meanings, and deliberate -- see [Lx200Codec.syncToTarget]. */
+    suspend fun syncTo(target: EquatorialCoordinates): SyncOutcome
 
     /** Sets the mount's GOTO speed. Fire-and-forget, with no success/failure to report: OnStep
      *  answers this command with nothing at all, and silently ignores it while a slew or guide is

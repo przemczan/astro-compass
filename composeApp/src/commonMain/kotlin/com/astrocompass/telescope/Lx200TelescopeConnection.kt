@@ -158,16 +158,49 @@ class Lx200TelescopeConnection(
     override suspend fun slewTo(target: EquatorialCoordinates): SlewOutcome {
         val activeSession = session ?: return SlewOutcome.NoConnection
 
-        val raAck = activeSession.executeCharAck(Lx200Codec.setTargetRightAscension(target.rightAscension))
-        if (!Lx200Codec.parseAck(raAck)) return SlewOutcome.Rejected("Mount rejected target right ascension")
-
-        val decAck = activeSession.executeCharAck(Lx200Codec.setTargetDeclination(target.declination))
-        if (!Lx200Codec.parseAck(decAck)) return SlewOutcome.Rejected("Mount rejected target declination")
+        if (!setTarget(activeSession, target)) return SlewOutcome.Rejected("Mount rejected target coordinates")
 
         return when (val ack = activeSession.executeSlew()) {
             SlewAck.Started -> SlewOutcome.Started
             is SlewAck.Rejected -> SlewOutcome.Rejected(ack.reason)
         }
+    }
+
+    override suspend fun beginAlignment(starCount: Int): Boolean = withSession(false) {
+        Lx200Codec.parseAck(it.executeCharAck(Lx200Codec.beginAlignment(starCount)))
+    }
+
+    override suspend fun readAtHome(): Boolean? = withSession(null) {
+        Lx200Codec.parseAtHome(it.executeHashTerminated(Lx200Codec.getStatus()))
+    }
+
+    override suspend fun moveToHome() {
+        withSession(Unit) { it.executeNoReply(Lx200Codec.moveToHome()) }
+    }
+
+    override suspend fun saveAlignmentModel(): Boolean = withSession(false) {
+        Lx200Codec.parseAck(it.executeCharAck(Lx200Codec.writeAlignmentModel()))
+    }
+
+    /** Goes through [withSession] rather than [slewTo]'s bare null check because a sync is fired
+     *  from a single confirming tap deep inside the alignment flow, where losing the whole run to
+     *  a thrown timeout would cost far more than the command itself. [SyncOutcome.NoConnection]
+     *  covers a timeout as well as a missing session, and correctly so: one timed-out read closes
+     *  the socket to unblock (see [Lx200Session.readWithTimeout]), so by the time it reports there
+     *  genuinely is no connection left. */
+    override suspend fun syncTo(target: EquatorialCoordinates): SyncOutcome = withSession(SyncOutcome.NoConnection) { activeSession ->
+        if (!setTarget(activeSession, target)) return@withSession SyncOutcome.Rejected
+        val accepted = Lx200Codec.parseSyncAccepted(activeSession.executeHashTerminated(Lx200Codec.syncToTarget()))
+        if (accepted) SyncOutcome.Synced else SyncOutcome.Rejected
+    }
+
+    /** The `:Sr`/`:Sd` pair both [slewTo] and [syncTo] set before their own command -- LX200 has
+     *  no coordinate-carrying slew or sync, only "act on the target set so far". */
+    private suspend fun setTarget(activeSession: Lx200Session, target: EquatorialCoordinates): Boolean {
+        val raAck = activeSession.executeCharAck(Lx200Codec.setTargetRightAscension(target.rightAscension))
+        if (!Lx200Codec.parseAck(raAck)) return false
+        val decAck = activeSession.executeCharAck(Lx200Codec.setTargetDeclination(target.declination))
+        return Lx200Codec.parseAck(decAck)
     }
 
     override suspend fun abortSlew() {

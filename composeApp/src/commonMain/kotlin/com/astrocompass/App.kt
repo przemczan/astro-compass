@@ -16,6 +16,7 @@ import com.astrocompass.guiding.ReferenceOrigin
 import com.astrocompass.guiding.currentHorizontal
 import com.astrocompass.ui.BackHandler
 import com.astrocompass.ui.screens.AlignmentScreen
+import com.astrocompass.ui.screens.AlignmentSession
 import com.astrocompass.ui.screens.GuidanceScreen
 import com.astrocompass.ui.screens.MapScreen
 import com.astrocompass.ui.screens.NightWizardListScreen
@@ -57,11 +58,20 @@ fun GuiderApp(container: AppContainer, onExitApp: () -> Unit = {}) {
         // The user's manual override of the wizard's start time, session-only (not persisted) --
         // null means "use the computed nautical-twilight default".
         var nightWizardStartOverride by remember { mutableStateOf<Long?>(null) }
+        // True while the Options step was reached *from* an in-progress run, so Back returns to it
+        // instead of cancelling. Options reached straight from MapScreen leaves this false, where
+        // Back does cancel -- there is nothing yet to return to.
+        var resumeWizardAfterOptions by remember { mutableStateOf(false) }
 
         // Hoisted here (rather than remembered inside MapScreen/SearchScreen) so the browse map's
         // position and the search screen's query/filter survive trips into Guidance/Alignment/
         // Settings/Search and back -- App.kt's `when` below tears down whichever screen composable
         // isn't currently selected.
+        // Hoisted for the same reason, plus one of its own: an armed mount alignment is state on the
+        // *mount*, and forgetting it here would offer to re-arm -- re-homing a mount mid-run. See
+        // AlignmentSession.
+        val alignmentSession = remember { AlignmentSession() }
+
         var searchViewport by remember { mutableStateOf(SkyMapViewport.DEFAULT) }
         var searchQuery by remember { mutableStateOf("") }
         var searchCategory by remember { mutableStateOf<SearchCategory?>(null) }
@@ -86,24 +96,46 @@ fun GuiderApp(container: AppContainer, onExitApp: () -> Unit = {}) {
 
         val location = resolvedLocation
 
-        // Returns to the wizard's Options step from anywhere further along (list preview or
-        // guiding) -- always clearing the candidate snapshot so Options is unambiguously "step 1"
-        // again: without this, a second back press from Options would fall through to
-        // `nightWizardObjects != null` and bounce back into the list instead of reaching MapScreen.
-        val openWizardOptions: () -> Unit = {
+        // The wizard's steps form a strictly linear stack -- MapScreen, Options, object list,
+        // guiding -- and Back walks it in that order and no other. Options is reachable *forward*
+        // from guiding's own toolbar as well, which is what resumeWizardAfterOptions exists for;
+        // what Back must never do is treat that shortcut as the way back, since every pair of
+        // steps that can each reach the other by Back is a loop with no exit to MapScreen.
+        val backToWizardList: () -> Unit = {
             isGuiding = false
             nightWizardStarted = false
-            nightWizardObjects = null
+        }
+        // Jumps forward to Options from anywhere further along. The run is left intact, so Back
+        // from Options drops straight back into it -- but only from a *started* run, since the
+        // object list's own Back already leads here.
+        val openWizardOptions: () -> Unit = {
+            resumeWizardAfterOptions = nightWizardStarted
+            isGuiding = false
             showNightWizardOptions = true
+        }
+        // Back out of Options into the guiding run it was opened from, on the same object. Only
+        // reached with nightWizardStarted set, so isGuiding is unconditionally restored -- leaving
+        // it false would fall past every wizard branch in the `when` below to MapScreen.
+        val resumeWizard: () -> Unit = {
+            showNightWizardOptions = false
+            resumeWizardAfterOptions = false
+            isGuiding = true
         }
         // Cancel: leaves the wizard entirely, back to MapScreen, discarding the session's start-time
         // override too so a future "Night wizard" tap starts from a fresh computed default.
+        //
+        // Clears selectedTarget as well, unlike plain "exit guidance" below: the exception that
+        // keeps a target marked exists for one the *user* picked, and whatever is selected here is
+        // only ever an object the wizard walked them onto. Leaving it would put a marker and a live
+        // Goto on MapScreen for something they never chose.
         val cancelWizard: () -> Unit = {
+            selectedTarget = null
             isGuiding = false
             showNightWizardOptions = false
             nightWizardObjects = null
             nightWizardStarted = false
             nightWizardStartOverride = null
+            resumeWizardAfterOptions = false
         }
 
         // Exiting guidance keeps selectedTarget marked, so the Search screen's Goto button is
@@ -113,9 +145,9 @@ fun GuiderApp(container: AppContainer, onExitApp: () -> Unit = {}) {
                 showSettings -> showSettings = false
                 showAlignment -> showAlignment = false
                 showTelescope -> showTelescope = false
-                showNightWizardOptions -> cancelWizard()
+                showNightWizardOptions -> if (resumeWizardAfterOptions) resumeWizard() else cancelWizard()
                 nightWizardObjects != null && !nightWizardStarted -> openWizardOptions()
-                isGuiding && nightWizardObjects != null -> openWizardOptions()
+                isGuiding && nightWizardObjects != null -> backToWizardList()
                 isGuiding -> isGuiding = false
                 showSearch -> showSearch = false
             }
@@ -136,11 +168,21 @@ fun GuiderApp(container: AppContainer, onExitApp: () -> Unit = {}) {
             )
 
             showAlignment && location != null -> AlignmentScreen(
+                session = alignmentSession,
                 catalogRepository = container.catalogRepository,
                 location = location,
                 telescopeDirection = telescopeDirection,
                 onCapturePoint = container::captureAlignmentPoint,
                 onSaveModel = { model -> container.saveAlignment(model) },
+                guidingMode = guidingMode,
+                onGuidingModeChange = { container.setGuidingMode(it) },
+                isTelescopeConnected = isTelescopeConnected,
+                onGoto = { star -> container.slewTelescopeTo(star, currentEpochMillis()) },
+                onBeginMountAlignment = { starCount -> container.beginTelescopeAlignment(starCount) },
+                onReadAtHome = { container.readTelescopeAtHome() },
+                onMoveHome = { container.moveTelescopeHome() },
+                onSyncTelescope = { star, capturedAt -> container.syncTelescopeTo(star, capturedAt) },
+                onSaveMountAlignmentModel = { container.saveTelescopeAlignmentModel() },
                 onBack = goBack,
                 onOpenSettings = { showSettings = true },
                 modifier = Modifier.fillMaxSize(),
@@ -192,11 +234,14 @@ fun GuiderApp(container: AppContainer, onExitApp: () -> Unit = {}) {
                 onMinAltitudeDegreesChange = { container.preferences.setNightWizardMinAltitudeDegrees(it) },
                 startEpochMillis = nightWizardStartOverride,
                 onStartEpochMillisChange = { nightWizardStartOverride = it },
+                // A recomputed candidate list restarts the run at the list-preview step, so
+                // whatever it replaced is no longer something Back could return to.
                 onNext = { candidates, startEpochMillis ->
                     nightWizardObjects = candidates
                     nightWizardStartEpochMillis = startEpochMillis
                     nightWizardIndex = 0
                     nightWizardStarted = false
+                    resumeWizardAfterOptions = false
                     showNightWizardOptions = false
                 },
                 onBack = goBack,
@@ -207,12 +252,15 @@ fun GuiderApp(container: AppContainer, onExitApp: () -> Unit = {}) {
                 objects = nightWizardObjects!!,
                 location = location,
                 startEpochMillis = nightWizardStartEpochMillis,
+                isResuming = nightWizardIndex > 0,
+                // Deliberately does not reset nightWizardIndex: a fresh candidate list already
+                // arrives at 0 (see Options' onNext), so leaving it alone is what lets Back out of
+                // guiding and back in again continue the night instead of restarting it.
                 onStart = {
                     nightWizardStarted = true
-                    nightWizardIndex = 0
-                    val firstTarget = nightWizardObjects!!.first()
-                    selectedTarget = firstTarget
-                    container.preferences.setLastTargetId(firstTarget.id)
+                    val target = nightWizardObjects!![nightWizardIndex]
+                    selectedTarget = target
+                    container.preferences.setLastTargetId(target.id)
                     isGuiding = true
                 },
                 onBack = goBack,
@@ -265,6 +313,7 @@ fun GuiderApp(container: AppContainer, onExitApp: () -> Unit = {}) {
                         }
                     },
                     onOpenWizardOptions = openWizardOptions,
+                    onBackToObjectList = backToWizardList,
                     modifier = Modifier.fillMaxSize(),
                 )
             }
@@ -297,6 +346,8 @@ fun GuiderApp(container: AppContainer, onExitApp: () -> Unit = {}) {
                 telescopeDirection = telescopeDirection,
                 isStarAligned = isStarAligned,
                 isTelescopeConnected = isTelescopeConnected,
+                guidingMode = guidingMode,
+                onGuidingModeChange = { container.setGuidingMode(it) },
                 selectedTarget = selectedTarget,
                 onSelectTarget = { target ->
                     selectedTarget = target
