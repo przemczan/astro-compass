@@ -106,6 +106,17 @@ than re-arming immediately, so a second attempt goes through the same check — 
 `mountAlignmentActive` stays true until a re-arm actually lands, since the protocol has no cancel
 and the mount stays armed regardless of what the app does.
 
+A "Controls" toggle in the same toolbar raises `TelescopeControlPad` — a hold-to-move hand
+controller (`:Mn#`/`:Ms#`/`:Me#`/`:Mw#`, released with the matching per-axis `:Qn#`…, never the
+blanket `:Q#`) with a `MoveRatePreset` selector in the middle of the cross. That rate (`:RG#`…
+`:RS#`) is OnStep's *manual-move* rate and has nothing to do with `SlewRatePreset`, the GOTO
+speed. The arrows are bordered `Box`es, not Material buttons — a button's own click/indication
+pointer input competes with `detectTapGestures` for the down event, and hold-to-move needs the
+press, not the click. Release joins the press's coroutine before sending its stop, so a quick tap
+cannot land as stop-then-start. Because release is what stops the mount, the pad's `onDispose` fires a blanket stop through
+`AppContainer.stopAllTelescopeMotion`, which runs on the container's own scope — a composable being
+torn down mid-press cannot stop the mount from its own dying scope.
+
 The run lives in `AlignmentSession`, owned by `GuiderApp`, not remembered inside the screen: the
 screen's own Settings button tears it down (`showSettings` is matched ahead of `showAlignment`),
 and an armed mount sequence that the app forgot would offer "Start" again — re-homing a mount two

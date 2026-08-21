@@ -170,6 +170,18 @@ class Lx200TelescopeConnection(
         Lx200Codec.parseAck(it.executeCharAck(Lx200Codec.beginAlignment(starCount)))
     }
 
+    override suspend fun startMove(direction: TelescopeDirection) {
+        withSession(Unit) { it.executeNoReply(Lx200Codec.startMove(direction)) }
+    }
+
+    override suspend fun stopMove(direction: TelescopeDirection) {
+        withSession(Unit) { it.executeNoReply(Lx200Codec.stopMove(direction)) }
+    }
+
+    override suspend fun setMoveRatePreset(preset: MoveRatePreset) {
+        withSession(Unit) { it.executeNoReply(Lx200Codec.setMoveRatePreset(preset)) }
+    }
+
     override suspend fun readAtHome(): Boolean? = withSession(null) {
         Lx200Codec.parseAtHome(it.executeHashTerminated(Lx200Codec.getStatus()))
     }

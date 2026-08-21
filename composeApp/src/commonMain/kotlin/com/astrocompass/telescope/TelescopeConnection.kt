@@ -122,6 +122,18 @@ interface TelescopeConnection {
      *  offers no cancel -- see [Lx200Codec.beginAlignment]. */
     suspend fun beginAlignment(starCount: Int): Boolean
 
+    /** Starts moving [direction] at the rate [setMoveRatePreset] last selected, and keeps moving
+     *  until the matching [stopMove]. Fire-and-forget: OnStep answers none of the manual-motion
+     *  commands, and a no-op without a connection. */
+    suspend fun startMove(direction: TelescopeDirection)
+
+    /** Stops the axis [direction] belongs to -- see [Lx200Codec.stopMove] for why this is
+     *  per-axis rather than [abortSlew]'s blanket stop. */
+    suspend fun stopMove(direction: TelescopeDirection)
+
+    /** Sets the manual-move rate. Independent of [setSlewRatePreset], which is the GOTO speed. */
+    suspend fun setMoveRatePreset(preset: MoveRatePreset)
+
     /** Whether the mount reports itself at its home position, or null with no connection or no
      *  answer. Read on demand, only while [com.astrocompass.ui.screens.AlignmentScreen] is offering
      *  to arm an alignment -- that is the one moment it decides anything, since [beginAlignment]

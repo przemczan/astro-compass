@@ -26,6 +26,31 @@ class Lx200CodecTest {
         assertEquals(":hC#", Lx200Codec.moveToHome())
     }
 
+    /** Move and stop share the direction suffix, so a mismatch between the two would leave the
+     *  mount running on an axis nothing stops. */
+    @Test
+    fun pairsEachMoveCommandWithTheStopForTheSameAxis() {
+        assertEquals(":Mn#", Lx200Codec.startMove(TelescopeDirection.NORTH))
+        assertEquals(":Ms#", Lx200Codec.startMove(TelescopeDirection.SOUTH))
+        assertEquals(":Me#", Lx200Codec.startMove(TelescopeDirection.EAST))
+        assertEquals(":Mw#", Lx200Codec.startMove(TelescopeDirection.WEST))
+        for (direction in TelescopeDirection.entries) {
+            assertEquals(
+                Lx200Codec.startMove(direction).replace(":M", ":Q"),
+                Lx200Codec.stopMove(direction),
+            )
+        }
+    }
+
+    @Test
+    fun encodesEveryMoveRatePreset() {
+        assertEquals(":RG#", Lx200Codec.setMoveRatePreset(MoveRatePreset.GUIDE))
+        assertEquals(":RC#", Lx200Codec.setMoveRatePreset(MoveRatePreset.CENTER))
+        assertEquals(":RM#", Lx200Codec.setMoveRatePreset(MoveRatePreset.FIND))
+        assertEquals(":RF#", Lx200Codec.setMoveRatePreset(MoveRatePreset.FAST))
+        assertEquals(":RS#", Lx200Codec.setMoveRatePreset(MoveRatePreset.SLEW))
+    }
+
     /** `H` is at-home; the lowercase `h` OnStep uses for *homing in progress* must not match, and
      *  neither may any other flag in the string. */
     @Test

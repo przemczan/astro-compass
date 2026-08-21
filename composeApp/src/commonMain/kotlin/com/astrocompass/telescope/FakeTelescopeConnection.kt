@@ -28,6 +28,11 @@ class FakeTelescopeConnection : TelescopeConnection {
     var lastSyncTarget: EquatorialCoordinates? = null
         private set
 
+    var movingDirections: Set<TelescopeDirection> = emptySet()
+        private set
+    var lastMoveRatePreset: MoveRatePreset? = null
+        private set
+
     var reportedAtHome: Boolean? = true
     var moveToHomeCalled: Boolean = false
         private set
@@ -75,6 +80,18 @@ class FakeTelescopeConnection : TelescopeConnection {
     override suspend fun beginAlignment(starCount: Int): Boolean {
         lastBeginAlignmentStarCount = starCount
         return alignmentAccepted
+    }
+
+    override suspend fun startMove(direction: TelescopeDirection) {
+        movingDirections = movingDirections + direction
+    }
+
+    override suspend fun stopMove(direction: TelescopeDirection) {
+        movingDirections = movingDirections - direction
+    }
+
+    override suspend fun setMoveRatePreset(preset: MoveRatePreset) {
+        lastMoveRatePreset = preset
     }
 
     override suspend fun readAtHome(): Boolean? = reportedAtHome

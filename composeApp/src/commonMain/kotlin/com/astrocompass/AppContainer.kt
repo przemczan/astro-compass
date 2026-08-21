@@ -42,12 +42,14 @@ import com.astrocompass.sensors.OrientationSensor
 import com.astrocompass.settings.AppPreferences
 import com.astrocompass.telescope.Lx200Codec
 import com.astrocompass.telescope.Lx200TelescopeConnection
+import com.astrocompass.telescope.MoveRatePreset
 import com.astrocompass.telescope.SlewOutcome
 import com.astrocompass.telescope.SlewRatePreset
 import com.astrocompass.telescope.SyncOutcome
 import com.astrocompass.telescope.TcpTelescopeTransport
 import com.astrocompass.telescope.TelescopeConnection
 import com.astrocompass.telescope.TelescopeConnectionState
+import com.astrocompass.telescope.TelescopeDirection
 import com.astrocompass.telescope.TelescopeEndpoint
 import com.astrocompass.telescope.TelescopePointingSource
 import com.astrocompass.telescope.TelescopeTransport
@@ -342,6 +344,19 @@ class AppContainer(
     }
 
     suspend fun abortTelescopeSlew() = telescopeConnection.abortSlew()
+
+    suspend fun startTelescopeMove(direction: TelescopeDirection) = telescopeConnection.startMove(direction)
+
+    suspend fun stopTelescopeMove(direction: TelescopeDirection) = telescopeConnection.stopMove(direction)
+
+    suspend fun setTelescopeMoveRatePreset(preset: MoveRatePreset) = telescopeConnection.setMoveRatePreset(preset)
+
+    /** The blanket stop, run on [scope] rather than the caller's so it still lands when the caller
+     *  is a composable being torn down -- a hand-control button whose release never arrives (the
+     *  screen closed mid-press) would otherwise leave the mount slewing with nothing to stop it. */
+    fun stopAllTelescopeMotion() {
+        scope.launch { telescopeConnection.abortSlew() }
+    }
 
     /** Arms the mount's own multi-star alignment -- see [TelescopeConnection.beginAlignment] for
      *  what that does to the mount before any star is added. */

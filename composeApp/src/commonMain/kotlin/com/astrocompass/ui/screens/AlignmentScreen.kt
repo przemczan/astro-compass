@@ -21,6 +21,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Gamepad
 import androidx.compose.material.icons.filled.GpsFixed
 import androidx.compose.material.icons.filled.Map
 import androidx.compose.material.icons.filled.RestartAlt
@@ -30,6 +31,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.ListItem
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
@@ -66,16 +68,20 @@ import com.astrocompass.catalog.StarObject
 import com.astrocompass.guiding.GuidingMode
 import com.astrocompass.guiding.currentHorizontal
 import com.astrocompass.location.ObserverLocation
+import com.astrocompass.telescope.MoveRatePreset
 import com.astrocompass.telescope.SlewOutcome
 import com.astrocompass.telescope.SyncOutcome
+import com.astrocompass.telescope.TelescopeDirection
 import com.astrocompass.ui.components.GuidingModeButton
 import com.astrocompass.ui.components.SkyMap
 import com.astrocompass.ui.components.SkyMapMarker
+import com.astrocompass.ui.components.TelescopeControlPad
 import com.astrocompass.ui.components.ToolbarActionButton
 import com.astrocompass.ui.components.mapOverlayScrim
 import com.astrocompass.ui.components.rememberSkyMapSnapshot
 import com.astrocompass.ui.skymap.SkyMapViewport
 import com.astrocompass.ui.theme.OnTargetGreen
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -140,6 +146,12 @@ fun AlignmentScreen(
      *  tap, the one instant "the telescope is on this star" is true. */
     onSyncTelescope: suspend (target: SkyObject, capturedAtEpochMillis: Long) -> SyncOutcome,
     onSaveMountAlignmentModel: suspend () -> Boolean,
+    /** Hand-controller motion for the "Controls" overlay -- press/release and the rate it moves at.
+     *  [onStopAllMotion] is deliberately not suspending; see [TelescopeControlPad]. */
+    onPressDirection: suspend (TelescopeDirection) -> Unit,
+    onReleaseDirection: suspend (TelescopeDirection) -> Unit,
+    onMoveRateChange: suspend (MoveRatePreset) -> Unit,
+    onStopAllMotion: () -> Unit,
     onBack: () -> Unit,
     onOpenSettings: () -> Unit,
     modifier: Modifier = Modifier,
@@ -165,6 +177,20 @@ fun AlignmentScreen(
     // (a trip through Settings) falls back to the run the mount is actually in the middle of, which
     // is the safe direction to fail -- the unsafe one would be offering Start for a mount that is
     // already armed, and session.mountAlignmentActive stays true until a re-arm actually lands.
+    var showControls by remember { mutableStateOf(false) }
+    var moveRate by remember { mutableStateOf(MoveRatePreset.DEFAULT) }
+    // Sent when the pad opens as well as when the rate is picked: the rate lives on the mount, and
+    // the pad's own default has never been sent to it, so opening without this would move at
+    // whatever the mount was last set to while the label claimed otherwise.
+    LaunchedEffect(showControls, moveRate) {
+        if (showControls) onMoveRateChange(moveRate)
+    }
+
+    // Press and release are separate coroutines, and a quick tap launches them back to back --
+    // joining the press before releasing is what stops an inverted pair from leaving the mount
+    // slewing with no stop coming. Per-axis, so holding two arrows at once still works.
+    val pressJobs = remember { mutableMapOf<TelescopeDirection, Job>() }
+
     var restartRequested by remember { mutableStateOf(false) }
     val startCardShowing = alignsMount && (!session.mountAlignmentActive || restartRequested)
 
@@ -316,6 +342,15 @@ fun AlignmentScreen(
                             },
                         )
                     }
+                    if (alignsMount) {
+                        ToolbarActionButton(
+                            icon = Icons.Default.Gamepad,
+                            label = "Controls",
+                            onClick = { showControls = !showControls },
+                            containerColor = if (showControls) MaterialTheme.colorScheme.primaryContainer else null,
+                            contentColor = if (showControls) MaterialTheme.colorScheme.onPrimaryContainer else LocalContentColor.current,
+                        )
+                    }
                     if (alignsMount && session.mountAlignmentActive) {
                         // Drops back to the Start card rather than re-arming straight away, so a
                         // restart goes through the same at-home check as the first attempt --
@@ -372,88 +407,110 @@ fun AlignmentScreen(
             )
 
             val target = pendingTarget
-            val stepModifier = Modifier.align(Alignment.BottomCenter).fillMaxWidth()
-            when {
-                alignsMount && session.isComplete -> MountAlignmentCompleteCard(
-                    starCount = session.starCount,
-                    busy = mountCommandInFlight,
-                    onSave = {
-                        mountCommandInFlight = true
-                        scope.launch {
-                            if (onSaveMountAlignmentModel()) {
-                                session.clear()
-                                onBack()
-                            } else {
-                                mountCommandInFlight = false
-                                snackbarHostState.showSnackbar("Mount refused to store the model — it stays active until power off")
+            // The step cards and the control pad share one bottom-anchored column so the pad
+            // stacks *above* whichever card is showing rather than covering it -- centering a star
+            // means reading the instruction and driving the mount at the same time.
+            Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
+                if (showControls) {
+                    TelescopeControlPad(
+                        moveRate = moveRate,
+                        onMoveRateChange = { moveRate = it },
+                        onPressDirection = { direction ->
+                            pressJobs[direction] = scope.launch { onPressDirection(direction) }
+                        },
+                        onReleaseDirection = { direction ->
+                            scope.launch {
+                                pressJobs.remove(direction)?.join()
+                                onReleaseDirection(direction)
                             }
-                        }
-                    },
-                    modifier = stepModifier,
-                )
-
-                phoneResult is AlignmentResult.Success -> AlignmentCompleteCard(
-                    result = phoneResult,
-                    onDone = { onSaveModel(phoneResult.model); session.clear(); onBack() },
-                    modifier = stepModifier,
-                )
-
-                startCardShowing -> StartMountAlignmentCard(
-                    starCount = session.starCount,
-                    atHome = atHome,
-                    alreadyArmed = session.mountAlignmentActive,
-                    busy = mountCommandInFlight,
-                    onSendHome = {
-                        scope.launch {
-                            onMoveHome()
-                            snackbarHostState.showSnackbar("Sending the mount home…")
-                        }
-                    },
-                    // markMountAlignmentArmed only after the mount has taken the command, so the
-                    // app's idea of the run and the mount's never diverge -- including on a restart,
-                    // where the previous sequence stays the app's truth until this one replaces it.
-                    onStart = {
-                        mountCommandInFlight = true
-                        scope.launch {
-                            if (onBeginMountAlignment(session.starCount)) {
-                                session.markMountAlignmentArmed()
-                                restartRequested = false
-                            } else {
-                                snackbarHostState.showSnackbar("Mount refused to start a ${session.starCount}-star alignment")
-                            }
-                            mountCommandInFlight = false
-                        }
-                    },
-                    modifier = stepModifier,
-                )
-
-                target != null -> ConfirmSyncStep(
-                    target = target,
-                    location = location,
-                    nowEpochMillis = now,
-                    existingDirections = syncedDirections,
-                    alignsMount = alignsMount,
-                    busy = mountCommandInFlight,
-                    onConfirm = { if (alignsMount) confirmMountSync(target) else confirmPhoneSync(target) },
-                    onPickDifferentStar = { pendingTarget = null },
-                    modifier = stepModifier,
-                )
-
-                phoneResult is AlignmentResult.Failure -> StepCard(stepModifier) {
-                    Text(phoneResult.reason, color = MaterialTheme.colorScheme.error)
-                    Text(
-                        "Remove one of the synced stars, then pick a different one.",
-                        style = MaterialTheme.typography.bodyMedium,
-                        modifier = Modifier.padding(top = 8.dp),
+                        },
+                        onStopAllMotion = onStopAllMotion,
+                        modifier = Modifier.mapOverlayScrim().padding(8.dp),
                     )
                 }
-
-                else -> StepCard(stepModifier) {
-                    Text("Pick a star to sync", style = MaterialTheme.typography.titleMedium)
-                    Text(
-                        "Tap one on the map, or switch to the list of the brightest stars up right now.",
-                        style = MaterialTheme.typography.bodyMedium,
+                val stepModifier = Modifier.fillMaxWidth()
+                when {
+                    alignsMount && session.isComplete -> MountAlignmentCompleteCard(
+                        starCount = session.starCount,
+                        busy = mountCommandInFlight,
+                        onSave = {
+                            mountCommandInFlight = true
+                            scope.launch {
+                                if (onSaveMountAlignmentModel()) {
+                                    session.clear()
+                                    onBack()
+                                } else {
+                                    mountCommandInFlight = false
+                                    snackbarHostState.showSnackbar("Mount refused to store the model — it stays active until power off")
+                                }
+                            }
+                        },
+                        modifier = stepModifier,
                     )
+
+                    phoneResult is AlignmentResult.Success -> AlignmentCompleteCard(
+                        result = phoneResult,
+                        onDone = { onSaveModel(phoneResult.model); session.clear(); onBack() },
+                        modifier = stepModifier,
+                    )
+
+                    startCardShowing -> StartMountAlignmentCard(
+                        starCount = session.starCount,
+                        atHome = atHome,
+                        alreadyArmed = session.mountAlignmentActive,
+                        busy = mountCommandInFlight,
+                        onSendHome = {
+                            scope.launch {
+                                onMoveHome()
+                                snackbarHostState.showSnackbar("Sending the mount home…")
+                            }
+                        },
+                        // markMountAlignmentArmed only after the mount has taken the command, so the
+                        // app's idea of the run and the mount's never diverge -- including on a restart,
+                        // where the previous sequence stays the app's truth until this one replaces it.
+                        onStart = {
+                            mountCommandInFlight = true
+                            scope.launch {
+                                if (onBeginMountAlignment(session.starCount)) {
+                                    session.markMountAlignmentArmed()
+                                    restartRequested = false
+                                } else {
+                                    snackbarHostState.showSnackbar("Mount refused to start a ${session.starCount}-star alignment")
+                                }
+                                mountCommandInFlight = false
+                            }
+                        },
+                        modifier = stepModifier,
+                    )
+
+                    target != null -> ConfirmSyncStep(
+                        target = target,
+                        location = location,
+                        nowEpochMillis = now,
+                        existingDirections = syncedDirections,
+                        alignsMount = alignsMount,
+                        busy = mountCommandInFlight,
+                        onConfirm = { if (alignsMount) confirmMountSync(target) else confirmPhoneSync(target) },
+                        onPickDifferentStar = { pendingTarget = null },
+                        modifier = stepModifier,
+                    )
+
+                    phoneResult is AlignmentResult.Failure -> StepCard(stepModifier) {
+                        Text(phoneResult.reason, color = MaterialTheme.colorScheme.error)
+                        Text(
+                            "Remove one of the synced stars, then pick a different one.",
+                            style = MaterialTheme.typography.bodyMedium,
+                            modifier = Modifier.padding(top = 8.dp),
+                        )
+                    }
+
+                    else -> StepCard(stepModifier) {
+                        Text("Pick a star to sync", style = MaterialTheme.typography.titleMedium)
+                        Text(
+                            "Tap one on the map, or switch to the list of the brightest stars up right now.",
+                            style = MaterialTheme.typography.bodyMedium,
+                        )
+                    }
                 }
             }
 

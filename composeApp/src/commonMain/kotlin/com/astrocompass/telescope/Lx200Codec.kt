@@ -54,6 +54,24 @@ object Lx200Codec {
         return ":A$starCount#"
     }
 
+    // -- Manual motion (TelescopeControlPad) ---------------------------------------------------
+    //
+    // All three answer nothing at all (OnStepX's `docs/COMMAND_REFERENCE.md` lists their reply as
+    // "none"), so every one goes out through [Lx200Session.executeNoReply]. Reading an ack instead
+    // would block until the timeout tore the whole connection down.
+
+    /** `:Mn#` / `:Ms#` / `:Me#` / `:Mw#` -- start moving, and keep moving until [stopMove]. Runs at
+     *  whatever [setMoveRatePreset] last selected, *not* the GOTO speed. */
+    fun startMove(direction: TelescopeDirection): String = ":M${direction.wireCharacter}#"
+
+    /** `:Qn#` / `:Qs#` / `:Qe#` / `:Qw#` -- stop the axis [direction] belongs to. Per-axis rather
+     *  than the blanket `:Q#` ([abortSlew]), so releasing one arrow cannot cancel a slew still
+     *  running on the other. */
+    fun stopMove(direction: TelescopeDirection): String = ":Q${direction.wireCharacter}#"
+
+    /** `:RG#` / `:RC#` / `:RM#` / `:RF#` / `:RS#` -- how fast [startMove] moves. */
+    fun setMoveRatePreset(preset: MoveRatePreset): String = preset.command
+
     /** `:hC#` -- slew the mount to its home position. Answers nothing at all, so it goes out
      *  through [Lx200Session.executeNoReply]. Offered alongside [beginAlignment] because that
      *  command declares wherever the mount *currently* stands to be home -- getting it genuinely
