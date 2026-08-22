@@ -20,9 +20,9 @@ class TcpTelescopeTransportTest {
     @Test
     fun connectsWritesAndReadsOverARealSocket() = runBlocking {
         val port = 47_815
-        val selectorManager = SelectorManager(Dispatchers.IO)
+        val selectorManager = SelectorManager(Dispatchers.Default)
         val serverSocket = aSocket(selectorManager).tcp().bind("127.0.0.1", port)
-        val serverJob = launch(Dispatchers.IO) {
+        val serverJob = launch(Dispatchers.Default) {
             val connection = serverSocket.accept()
             val readChannel = connection.openReadChannel()
             val writeChannel = connection.openWriteChannel(autoFlush = true)

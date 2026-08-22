@@ -32,7 +32,7 @@ class TcpTelescopeTransport(private val host: String, private val port: Int) : T
 
     override suspend fun connect() {
         _state.value = TelescopeTransportState.CONNECTING
-        val newSelectorManager = SelectorManager(Dispatchers.IO)
+        val newSelectorManager = SelectorManager(Dispatchers.Default)
         val connected = runCatching { aSocket(newSelectorManager).tcp().connect(host, port) }.getOrNull()
 
         if (connected == null) {
