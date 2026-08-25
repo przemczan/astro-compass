@@ -41,11 +41,21 @@ data class MapObjectFilter(
     val showNebulae: Boolean = true,
     val showClusters: Boolean = true,
     val showOther: Boolean = true,
+    /** Hides anything dimmer than this magnitude -- null (the default) applies no limit at all,
+     *  matching the map's behavior before this existed. [SolarSystemObject]s and the ~10% of DSOs
+     *  OpenNGC has no magnitude for are exempt rather than hidden, since [SkyObject.magnitude]'s
+     *  NaN convention for both means there's nothing to compare against -- see
+     *  [com.astrocompass.ui.components.MapFilterSheet]'s "(only for those we have the info)" slider. */
+    val maxMagnitude: Float? = null,
 ) {
-    fun matches(obj: SkyObject): Boolean = when (obj) {
-        is SolarSystemObject -> showSolarSystem
-        is DeepSkyObject -> isShown(obj.type.toMapObjectCategory())
-        else -> true
+    fun matches(obj: SkyObject): Boolean {
+        val categoryMatches = when (obj) {
+            is SolarSystemObject -> showSolarSystem
+            is DeepSkyObject -> isShown(obj.type.toMapObjectCategory())
+            else -> true
+        }
+        if (!categoryMatches) return false
+        return maxMagnitude == null || obj.magnitude.isNaN() || obj.magnitude <= maxMagnitude
     }
 
     /** Per-category get/set, so a filter-toggle UI can iterate [MapObjectCategory.entries] instead

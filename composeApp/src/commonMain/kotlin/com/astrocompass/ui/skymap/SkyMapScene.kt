@@ -173,18 +173,47 @@ object SkyMapScene {
             .toList()
     }
 
-    /** The closest projected object to [tapPoint], within [maxDistance] (both in the same plane
-     *  units as [ProjectedObject.point] -- the caller converts a raw pixel tap using
-     *  [pixelsPerPlaneUnit]), or null if nothing is that close. */
-    fun nearest(scene: List<ProjectedObject>, tapPoint: PlanePoint, maxDistance: Double): ProjectedObject? {
+    /** The best tap target for [tapPoint] among [scene], within [maxDistance] of some candidate's
+     *  own center if nothing better applies (both in the same plane units as
+     *  [ProjectedObject.point] -- the caller converts a raw pixel tap using
+     *  [pixelsPerPlaneUnit]), or null if nothing qualifies.
+     *
+     *  A tap landing inside a candidate's own rendered disc (per [radiusPlaneUnits], in the same
+     *  plane units) always beats one that doesn't, regardless of which center is numerically
+     *  closer -- without this, a bright star's own large glow can visually cover a much fainter,
+     *  tinier neighbor a fraction of a degree away (a real case: Markab/HIP 114031 in Pegasus,
+     *  ~0.3 degrees apart), and a tap squarely on the bright star's disc would still resolve to
+     *  the neighbor because its exact center happens to sit a few pixels closer to the tap than
+     *  the bright star's own center does. Among several discs that all contain the tap, the
+     *  smallest radius wins (the more specific target), matching how a small icon sitting on a
+     *  large background shape stays individually tappable. Only once no candidate's disc contains
+     *  the tap does this fall back to nearest-center-within-[maxDistance], as before. */
+    fun nearest(
+        scene: List<ProjectedObject>,
+        tapPoint: PlanePoint,
+        maxDistance: Double,
+        radiusPlaneUnits: (ProjectedObject) -> Double = { 0.0 },
+    ): ProjectedObject? {
         var best: ProjectedObject? = null
-        var bestDistance = maxDistance
+        var bestIsContained = false
+        var bestRadius = Double.POSITIVE_INFINITY
+        var bestDistance = Double.POSITIVE_INFINITY
         for (candidate in scene) {
             val dx = candidate.point.x - tapPoint.x
             val dy = candidate.point.y - tapPoint.y
             val distance = sqrt(dx * dx + dy * dy)
-            if (distance <= bestDistance) {
+            val radius = radiusPlaneUnits(candidate)
+            val isContained = distance <= radius
+            val betterThanBest = when {
+                isContained && !bestIsContained -> true
+                isContained -> radius < bestRadius
+                bestIsContained -> false
+                else -> distance <= maxDistance && distance < bestDistance
+            }
+            if (betterThanBest) {
                 best = candidate
+                bestIsContained = isContained
+                bestRadius = radius
                 bestDistance = distance
             }
         }

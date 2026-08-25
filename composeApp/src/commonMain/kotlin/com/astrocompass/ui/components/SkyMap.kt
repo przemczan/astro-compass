@@ -33,6 +33,7 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.drawText
 import androidx.compose.ui.text.rememberTextMeasurer
+import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import com.astrocompass.astro.Angle
@@ -80,7 +81,21 @@ private data class ObjectPhoto(
     val rotationDegrees: Float,
 )
 
-private val STAR_LABEL_COUNT = 12
+/** An object is labeled once it's this many magnitudes brighter than the current zoom's own
+ *  reveal threshold ([SkyMapScene.starMagnitudeLimitFor]) -- a fixed per-object rule, deliberately
+ *  *not* "the N brightest objects currently on screen". A rank-based top-N was tried first and
+ *  had a real bug: which objects rank in the top N depends on the whole on-screen population, so
+ *  a star sitting still in the middle of the screen could still gain or lose its label as
+ *  unrelated stars entered or left the view elsewhere while panning. Gating on each object's own
+ *  magnitude against the current zoom instead means a star's labeled state depends only on itself
+ *  and the current field of view -- stable under panning, and naturally denser as you zoom in,
+ *  same as the reveal curve it's offset from. */
+private const val LABEL_MAGNITUDE_MARGIN = 3f
+/** Safety cap on how many labels [SkyMap] draws in one frame -- [LABEL_MAGNITUDE_MARGIN] alone
+ *  already keeps this low in ordinary star fields, so this only matters in pathologically dense
+ *  ones (a bright open cluster zoomed in close). Sorted by magnitude first so, on the rare frame
+ *  this actually binds, it's still the brightest objects that survive, not an arbitrary subset. */
+private const val MAX_LABELS = 40
 private val TOUCH_TARGET_RADIUS_DP = 22.dp
 /** A star's rendered core radius grows linearly with how far its magnitude sits above the
  *  *current zoom's* limiting magnitude ([SkyMapScene.starMagnitudeLimitFor]) -- not with its
@@ -276,8 +291,12 @@ fun SkyMap(
                     // one hard to tap until you zoom in past the faint one's own reveal point anyway.
                     val starMagnitudeLimit = SkyMapScene.starMagnitudeLimitFor(currentViewport.value.fieldOfViewDegrees)
                     val selectableScene = currentScene.value.filter { isSelectable(it.skyObject, starMagnitudeLimit, ppu) }
-                    SkyMapScene.nearest(selectableScene, tapPoint, touchRadiusUnits.toDouble())
-                        ?.let { select(it.skyObject) }
+                    SkyMapScene.nearest(
+                        selectableScene,
+                        tapPoint,
+                        touchRadiusUnits.toDouble(),
+                        radiusPlaneUnits = { renderedRadiusPx(it.skyObject, starMagnitudeLimit, ppu).toDouble() / ppu },
+                    )?.let { select(it.skyObject) }
                 }
             },
     ) {
@@ -300,6 +319,15 @@ fun SkyMap(
         // neither system reaches further toward the edge than the other.
         val maxPlaneX = (this.size.width / 2.0 / pixelsPerUnit) * SkyMapScene.VIEWPORT_BOUNDS_MARGIN
         val maxPlaneY = (this.size.height / 2.0 / pixelsPerUnit) * SkyMapScene.VIEWPORT_BOUNDS_MARGIN
+
+        // Unlike maxPlaneX/maxPlaneY above, NOT margined -- scene includes objects out to
+        // VIEWPORT_BOUNDS_MARGIN beyond the canvas so dots don't pop in/out at the edge while
+        // panning, but the label pass below must never label something that isn't actually drawn
+        // on screen.
+        val visibleHalfWidth = this.size.width / 2.0 / pixelsPerUnit
+        val visibleHalfHeight = this.size.height / 2.0 / pixelsPerUnit
+        fun isOnScreen(point: PlanePoint) =
+            kotlin.math.abs(point.x) <= visibleHalfWidth && kotlin.math.abs(point.y) <= visibleHalfHeight
 
         drawGraticule(projection, ::toScreen, graticuleColor, maxPlaneX, maxPlaneY)
         drawConstellationLines(constellationLines, projection, ::toScreen, constellationLineColor, maxPlaneX, maxPlaneY)
@@ -344,12 +372,15 @@ fun SkyMap(
 
         // Planets/Sun/Moon are always labeled (there are only a handful, and unlike a star they
         // have no real magnitude to rank by -- see SkyMapScene's SOLAR_SYSTEM_BODY_SENTINEL).
+        val labelMagnitudeLimit = currentStarMagnitudeLimit - LABEL_MAGNITUDE_MARGIN
         val labeled = scene
             .filter { !it.skyObject.magnitude.isNaN() }
             .filter { it.skyObject !is DeepSkyObject || it.skyObject.id in visibleDsoIds }
+            .filter { isOnScreen(it.point) }
+            .filter { it.skyObject.magnitude <= labelMagnitudeLimit }
             .sortedBy { it.skyObject.magnitude }
-            .take(STAR_LABEL_COUNT) +
-            scene.filter { highlightedIds.contains(it.skyObject.id) || it.skyObject is SolarSystemObject }
+            .take(MAX_LABELS) +
+            scene.filter { (highlightedIds.contains(it.skyObject.id) || it.skyObject is SolarSystemObject) && isOnScreen(it.point) }
         for (projected in labeled.distinct()) {
             drawObjectLabel(toScreen(projected.point), projected.skyObject.displayName, textMeasurer, labelStyle)
         }
@@ -554,6 +585,22 @@ private fun isSelectable(obj: SkyObject, currentStarMagnitudeLimit: Float, pixel
     is SolarSystemObject -> starCoreRadius(PLANET_DRAW_MAGNITUDE, currentStarMagnitudeLimit) >= HALO_MIN_CORE_RADIUS_PX
     is DeepSkyObject -> dsoSizeAlpha(obj.apparentRadiusPx(pixelsPerUnit)) > 0f
 }
+
+/** [obj]'s on-screen radius exactly as [drawStar]/[drawDeepSkyObject] render it -- passed to
+ *  [SkyMapScene.nearest] so a tap landing inside a bright object's own visible disc resolves to
+ *  it even when a much fainter neighbor's exact center happens to sit a few pixels closer to the
+ *  tap. Without this, a prominent star's own glow could visually cover a tiny, faint companion a
+ *  fraction of a degree away, and a tap squarely on the prominent star would still resolve to the
+ *  companion on raw center-to-center distance alone. */
+private fun Density.renderedRadiusPx(obj: SkyObject, currentStarMagnitudeLimit: Float, pixelsPerUnit: Float): Float =
+    when (obj) {
+        is StarObject -> starCoreRadius(obj.magnitude, currentStarMagnitudeLimit)
+        is SolarSystemObject -> starCoreRadius(PLANET_DRAW_MAGNITUDE, currentStarMagnitudeLimit) * SOLAR_SYSTEM_SIZE_MULTIPLIER
+        is DeepSkyObject -> {
+            val apparentRadiusPx = obj.apparentRadiusPx(pixelsPerUnit)
+            if (apparentRadiusPx == null) DSO_GLYPH_RADIUS_DP.toPx() else max(DSO_GLYPH_RADIUS_DP.toPx(), apparentRadiusPx)
+        }
+    }
 
 /** Draws a DSO's schematic dot/oval/square/diamond glyph, fading in by real apparent size (see
  *  [MIN_DSO_APPARENT_RADIUS_PX]) unless [isHighlighted] -- a selected/searched-for object stays

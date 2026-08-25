@@ -111,6 +111,7 @@ class AppPreferences(private val settings: Settings) {
             showNebulae = settings.getBoolean(KEY_SHOW_NEBULAE, true),
             showClusters = settings.getBoolean(KEY_SHOW_CLUSTERS, true),
             showOther = settings.getBoolean(KEY_SHOW_OTHER, true),
+            maxMagnitude = settings.getFloatOrNull(KEY_MAP_MAX_MAGNITUDE),
         )
     )
     fun setMapObjectFilter(filter: MapObjectFilter) {
@@ -120,6 +121,7 @@ class AppPreferences(private val settings: Settings) {
         settings.putBoolean(KEY_SHOW_NEBULAE, filter.showNebulae)
         settings.putBoolean(KEY_SHOW_CLUSTERS, filter.showClusters)
         settings.putBoolean(KEY_SHOW_OTHER, filter.showOther)
+        if (filter.maxMagnitude == null) settings.remove(KEY_MAP_MAX_MAGNITUDE) else settings.putFloat(KEY_MAP_MAX_MAGNITUDE, filter.maxMagnitude)
     }
 
     /** The Night Wizard's own type filter -- separate from [mapObjectFilter] since each screen's
@@ -208,6 +210,7 @@ class AppPreferences(private val settings: Settings) {
         const val KEY_SHOW_NEBULAE = "show_nebulae"
         const val KEY_SHOW_CLUSTERS = "show_clusters"
         const val KEY_SHOW_OTHER = "show_other"
+        const val KEY_MAP_MAX_MAGNITUDE = "map_max_magnitude"
         const val KEY_WIZARD_SHOW_SOLAR_SYSTEM = "wizard_show_solar_system"
         const val KEY_WIZARD_SHOW_GALAXIES = "wizard_show_galaxies"
         const val KEY_WIZARD_SHOW_NEBULAE = "wizard_show_nebulae"

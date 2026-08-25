@@ -8,6 +8,7 @@ private const val DEG_TO_RAD = PI / 180.0
 private const val RAD_TO_DEG = 180.0 / PI
 
 /** An angle, stored internally as degrees. Avoids ambiguity between degree- and radian-valued Doubles. */
+@JvmInline
 value class Angle private constructor(val degrees: Double) {
 
     val radians: Double get() = degrees * DEG_TO_RAD

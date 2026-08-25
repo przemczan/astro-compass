@@ -165,4 +165,38 @@ class SkyMapSceneTest {
 
         assertNull(hit)
     }
+
+    @Test
+    fun nearest_prefersTheObjectWhoseDiscContainsTheTap_overACloserButSmallerNeighbor() {
+        // Mirrors a real case: Markab (HIP 114963, mag 2.5) has a mag 6.8 companion ~0.3 degrees
+        // away. At the zoom where that companion first becomes selectable, Markab's own rendered
+        // core (bright stars draw larger) reaches ~10.6 plane units while the gap between the two
+        // centers is ~18.6 -- so a tap ~10 units from Markab's own center still lands inside
+        // Markab's disc, yet sits numerically closer to the companion's tiny (~2-unit) disc than
+        // to Markab's own center. A radius-blind nearest-center search picks the companion every
+        // time a tap lands anywhere past the map's true center toward it, which is what "Markab is
+        // unselectable, some other star always wins" looks like from the user's side.
+        val bright = ProjectedObject(star(1, 2.5f).first, PlanePoint(0.0, 0.0), Vector3.UNIT_Z)
+        val faintCompanion = ProjectedObject(star(2, 6.8f).first, PlanePoint(18.6, 0.0), Vector3.UNIT_Z)
+        val radii = mapOf(bright to 10.6, faintCompanion to 2.0)
+        val tapPoint = PlanePoint(10.0, 0.0)
+
+        val hit = SkyMapScene.nearest(listOf(bright, faintCompanion), tapPoint, maxDistance = 30.0) { radii.getValue(it) }
+
+        assertEquals(bright, hit)
+    }
+
+    @Test
+    fun nearest_prefersTheSmallerDisc_whenTapContainsSeveral() {
+        // A tiny object sitting inside a much larger one's disc (e.g. a star superimposed on a
+        // wide DSO glyph) must stay individually tappable -- the more specific (smaller) target
+        // wins, rather than the large one always swallowing it.
+        val large = ProjectedObject(star(1, 1f).first, PlanePoint(0.0, 0.0), Vector3.UNIT_Z)
+        val small = ProjectedObject(star(2, 5f).first, PlanePoint(2.0, 0.0), Vector3.UNIT_Z)
+        val radii = mapOf(large to 20.0, small to 3.0)
+
+        val hit = SkyMapScene.nearest(listOf(large, small), PlanePoint(2.0, 0.0), maxDistance = 30.0) { radii.getValue(it) }
+
+        assertEquals(small, hit)
+    }
 }
