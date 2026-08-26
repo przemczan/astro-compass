@@ -8,8 +8,8 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Explore
@@ -30,6 +30,7 @@ import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.VerticalDivider
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -138,12 +139,12 @@ fun MapScreen(
         },
         bottomBar = {
             BottomAppBar {
-                Spacer(Modifier.weight(1f))
                 GuidingModeButton(
                     mode = guidingMode,
                     telescopeConnected = isTelescopeConnected,
                     onModeChange = onGuidingModeChange,
                 )
+                VerticalDivider(Modifier.height(32.dp).padding(horizontal = 4.dp))
                 ToolbarActionButton(icon = Icons.Default.Visibility, label = "Filter", onClick = { showFilterSheet = true })
                 // "Not aligned" is a claim about the *phone's* star fit, and only Phone mode is
                 // driven by it -- under Telescope mode the mount supplies pointing on its own, so
@@ -172,7 +173,6 @@ fun MapScreen(
                     containerColor = if (isTelescopeConnected) MaterialTheme.colorScheme.primaryContainer else null,
                     contentColor = if (isTelescopeConnected) MaterialTheme.colorScheme.onPrimaryContainer else LocalContentColor.current,
                 )
-                Spacer(Modifier.weight(1f))
             }
         },
         snackbarHost = { SnackbarHost(snackbarHostState) },

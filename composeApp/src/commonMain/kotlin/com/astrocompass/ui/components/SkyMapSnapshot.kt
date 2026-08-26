@@ -51,11 +51,12 @@ data class SkyMapSnapshot(
  *
  * [filterKey] -- not [catalogFilter] itself -- is what [remember] keys the filtered subset on.
  * Lambdas never compare structurally equal across recompositions unless they close over nothing at
- * all, so a [catalogFilter] built from live preference state (as opposed to AlignmentScreen's fixed
- * `{ it is StarObject }`) would otherwise be a *different* lambda instance every recomposition,
- * defeating memoization and re-filtering the whole catalog constantly. Passing the filter's actual
- * backing value (e.g. a [com.astrocompass.catalog.MapObjectFilter], which has real `equals`) as
- * [filterKey] fixes that: [remember] only re-runs [catalogFilter] when that value actually changes.
+ * all, so a [catalogFilter] built from live preference state would otherwise be a *different*
+ * lambda instance every recomposition, defeating memoization and re-filtering the whole catalog
+ * constantly. Passing the filter's actual backing value (e.g. a
+ * [com.astrocompass.catalog.MapObjectFilter], which has real `equals`) as [filterKey] fixes that:
+ * [remember] only re-runs [catalogFilter] when that value actually changes. A caller with a truly
+ * fixed filter (closing over nothing live) can leave [filterKey] at its `null` default instead.
  */
 @Composable
 fun rememberSkyMapSnapshot(

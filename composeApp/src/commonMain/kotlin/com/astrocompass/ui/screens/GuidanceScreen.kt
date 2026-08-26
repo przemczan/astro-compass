@@ -298,12 +298,8 @@ fun GuidanceScreen(
                                 onClick = onOpenWizardOptions,
                                 modifier = Modifier.weight(1f),
                             )
-                            ToolbarActionButton(
-                                icon = Icons.Default.Close,
-                                label = "Cancel",
-                                onClick = onExitGuiding,
-                                modifier = Modifier.weight(1f),
-                            )
+                            VerticalDivider(Modifier.height(32.dp).padding(horizontal = 4.dp))
+                            ToolbarActionButton(icon = Icons.Default.Close, label = "Exit", onClick = onExitGuiding)
                         }
                     } else {
                         Row(

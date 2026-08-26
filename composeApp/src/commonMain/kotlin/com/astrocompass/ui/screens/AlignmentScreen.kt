@@ -8,7 +8,6 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -26,6 +25,7 @@ import androidx.compose.material.icons.filled.GpsFixed
 import androidx.compose.material.icons.filled.Map
 import androidx.compose.material.icons.filled.RestartAlt
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material3.BottomAppBar
 import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
@@ -63,6 +63,7 @@ import com.astrocompass.alignment.AlignmentResult
 import com.astrocompass.alignment.AlignmentSolver
 import com.astrocompass.alignment.AlignmentSource
 import com.astrocompass.catalog.CatalogRepository
+import com.astrocompass.catalog.MapObjectFilter
 import com.astrocompass.catalog.SkyObject
 import com.astrocompass.catalog.StarObject
 import com.astrocompass.guiding.GuidingMode
@@ -73,6 +74,7 @@ import com.astrocompass.telescope.SlewOutcome
 import com.astrocompass.telescope.SyncOutcome
 import com.astrocompass.telescope.TelescopeDirection
 import com.astrocompass.ui.components.GuidingModeButton
+import com.astrocompass.ui.components.MapFilterSheet
 import com.astrocompass.ui.components.SkyMap
 import com.astrocompass.ui.components.SkyMapMarker
 import com.astrocompass.ui.components.TelescopeControlPad
@@ -102,9 +104,9 @@ private enum class StarSortMode(val label: String) { MAGNITUDE("Magnitude"), NAM
  * Walks the user through 2-3 star syncs, one star at a time: pick a star, point the telescope at
  * it, confirm. The sky map is the permanent backdrop for all of that -- every step renders as an
  * overlay on top of it rather than replacing it, so the surrounding sky stays available for
- * star-hopping by eye while a pick is pending. The map only ever *picks* a star while a pick could
- * actually go somewhere; otherwise it is an overview and nothing more, and the overlay's own
- * buttons are the only way forward or back.
+ * star-hopping by eye, and tapping a different star while one is already pending simply replaces
+ * the pick. The map only ever *picks* a star while a pick could actually go somewhere; otherwise
+ * it is an overview and nothing more.
  *
  * [guidingMode] chooses **which instrument the run aligns, never both**:
  *
@@ -127,6 +129,12 @@ fun AlignmentScreen(
     /** Marked in blue while a connected mount is reporting -- see
      *  [com.astrocompass.AppContainer.telescopeSkyDirection]. */
     telescopeDirection: Vector3?,
+    /** Shared with [com.astrocompass.ui.screens.MapScreen] and [com.astrocompass.ui.screens.GuidanceScreen]
+     *  -- the same "Filter" button and sheet, the same [MapObjectFilter.maxMagnitude]. Category
+     *  toggles are inert here since [suggestions] and the map's own catalog subset are already
+     *  narrowed to [StarObject], which [MapObjectFilter.matches] never gates on category. */
+    mapObjectFilter: MapObjectFilter,
+    onMapObjectFilterChange: (MapObjectFilter) -> Unit,
     onCapturePoint: (target: SkyObject, source: AlignmentSource, nowEpochMillis: Long) -> AlignmentPoint?,
     onSaveModel: (AlignmentModel) -> Unit,
     guidingMode: GuidingMode,
@@ -158,6 +166,7 @@ fun AlignmentScreen(
 ) {
     var pendingTarget by remember { mutableStateOf<StarObject?>(null) }
     var showList by remember { mutableStateOf(false) }
+    var showFilterSheet by remember { mutableStateOf(false) }
     var sortMode by remember { mutableStateOf(StarSortMode.MAGNITUDE) }
     var viewport by remember { mutableStateOf(SkyMapViewport.DEFAULT) }
     // Every mount command is a round trip over a slow serial link; without this a second tap
@@ -248,8 +257,12 @@ fun AlignmentScreen(
     } else {
         session.points.map { it.skyDirection }
     }
-    val suggestions = remember(catalogLoaded, now, session.syncedCount) {
-        if (!catalogLoaded) emptyList() else suggestStars(catalogRepository, location, now, syncedDirections)
+    val suggestions = remember(catalogLoaded, now, session.syncedCount, mapObjectFilter.maxMagnitude) {
+        if (!catalogLoaded) {
+            emptyList()
+        } else {
+            suggestStars(catalogRepository, location, now, syncedDirections, mapObjectFilter.maxMagnitude)
+        }
     }
     val sortedSuggestions = remember(suggestions, sortMode) {
         when (sortMode) {
@@ -260,7 +273,11 @@ fun AlignmentScreen(
     // Deliberately its own (slower) refresh cadence, decoupled from the `now` above -- that one
     // exists for suggestStars and the alignment countdown/age display, which want to be current to
     // the second, not for how often the map itself needs to be re-precessed.
-    val snapshot = rememberSkyMapSnapshot(catalogRepository, location, catalogFilter = { it is StarObject })
+    val snapshot = rememberSkyMapSnapshot(
+        catalogRepository, location,
+        filterKey = mapObjectFilter,
+        catalogFilter = { it is StarObject && mapObjectFilter.matches(it) },
+    )
     val syncedMarkers = syncedDirections.mapIndexed { index, direction ->
         SkyMapMarker(direction = direction, color = OnTargetGreen, label = syncedNames.getOrNull(index))
     }
@@ -272,13 +289,12 @@ fun AlignmentScreen(
         )
     }
 
-    // Both halves matter: with a pick pending the overlay's own buttons are the only way forward,
-    // and with the last star already synced there is nothing a further pick could feed. A mount run
-    // additionally has nothing to pick *into* until its sequence is armed. Gates the list the same
-    // way as the map, or the list would just be the other way in.
-    val canPickStar = pendingTarget == null &&
-        !session.isComplete &&
-        (!alignsMount || session.mountAlignmentActive)
+    // Picking is allowed even with a target already pending -- tapping another star just replaces
+    // it, so there's no separate "choose a different star" step. With the last star already synced
+    // there is nothing a further pick could feed, and a mount run additionally has nothing to pick
+    // *into* until its sequence is armed. Gates the list the same way as the map, or the list would
+    // just be the other way in.
+    val canPickStar = !session.isComplete && (!alignsMount || session.mountAlignmentActive)
 
     val confirmPhoneSync: (StarObject) -> Unit = { target ->
         onCapturePoint(target, AlignmentSource.MANUAL_SYNC, currentEpochMillis())?.let(session::addPoint)
@@ -324,55 +340,59 @@ fun AlignmentScreen(
                         onModeChange = onGuidingModeChange,
                     )
                     VerticalDivider(Modifier.height(32.dp).padding(horizontal = 4.dp))
-                    if (alignsMount) {
-                        ToolbarActionButton(
-                            icon = Icons.Default.GpsFixed,
-                            label = "GOTO",
-                            enabled = pendingTarget != null,
-                            onClick = {
-                                val star = pendingTarget ?: return@ToolbarActionButton
-                                scope.launch {
-                                    val message = when (val outcome = onGoto(star)) {
-                                        is SlewOutcome.Rejected -> outcome.reason
-                                        SlewOutcome.NoConnection -> "Telescope not connected"
-                                        SlewOutcome.Started -> "Slewing to ${star.displayName}"
+                    Row(Modifier.weight(1f)) {
+                        if (alignsMount) {
+                            ToolbarActionButton(
+                                icon = Icons.Default.GpsFixed,
+                                label = "GOTO",
+                                enabled = pendingTarget != null,
+                                onClick = {
+                                    val star = pendingTarget ?: return@ToolbarActionButton
+                                    scope.launch {
+                                        val message = when (val outcome = onGoto(star)) {
+                                            is SlewOutcome.Rejected -> outcome.reason
+                                            SlewOutcome.NoConnection -> "Telescope not connected"
+                                            SlewOutcome.Started -> "Slewing to ${star.displayName}"
+                                        }
+                                        snackbarHostState.showSnackbar(message)
                                     }
-                                    snackbarHostState.showSnackbar(message)
-                                }
-                            },
-                        )
-                    }
-                    if (alignsMount) {
+                                },
+                            )
+                        }
+                        if (alignsMount) {
+                            ToolbarActionButton(
+                                icon = Icons.Default.Gamepad,
+                                label = "Controls",
+                                onClick = { showControls = !showControls },
+                                containerColor = if (showControls) MaterialTheme.colorScheme.primaryContainer else null,
+                                contentColor = if (showControls) MaterialTheme.colorScheme.onPrimaryContainer else LocalContentColor.current,
+                            )
+                        }
+                        if (alignsMount && session.mountAlignmentActive) {
+                            // Drops back to the Start card rather than re-arming straight away, so a
+                            // restart goes through the same at-home check as the first attempt --
+                            // re-arming is the only way out of a half-finished sequence (OnStep has no
+                            // cancel), and doing it from the wrong position is what made it wrong.
+                            ToolbarActionButton(
+                                icon = Icons.Default.RestartAlt,
+                                label = "Restart",
+                                enabled = !mountCommandInFlight,
+                                onClick = {
+                                    pendingTarget = null
+                                    restartRequested = true
+                                },
+                            )
+                        }
+                        ToolbarActionButton(icon = Icons.Default.Visibility, label = "Filter", onClick = { showFilterSheet = true })
                         ToolbarActionButton(
-                            icon = Icons.Default.Gamepad,
-                            label = "Controls",
-                            onClick = { showControls = !showControls },
-                            containerColor = if (showControls) MaterialTheme.colorScheme.primaryContainer else null,
-                            contentColor = if (showControls) MaterialTheme.colorScheme.onPrimaryContainer else LocalContentColor.current,
+                            icon = if (showList) Icons.Default.Map else Icons.AutoMirrored.Filled.List,
+                            label = if (showList) "Map" else "List",
+                            enabled = showList || canPickStar,
+                            onClick = { showList = !showList },
                         )
                     }
-                    if (alignsMount && session.mountAlignmentActive) {
-                        // Drops back to the Start card rather than re-arming straight away, so a
-                        // restart goes through the same at-home check as the first attempt --
-                        // re-arming is the only way out of a half-finished sequence (OnStep has no
-                        // cancel), and doing it from the wrong position is what made it wrong.
-                        ToolbarActionButton(
-                            icon = Icons.Default.RestartAlt,
-                            label = "Restart",
-                            enabled = !mountCommandInFlight,
-                            onClick = {
-                                pendingTarget = null
-                                restartRequested = true
-                            },
-                        )
-                    }
-                    Spacer(Modifier.weight(1f))
-                    ToolbarActionButton(
-                        icon = if (showList) Icons.Default.Map else Icons.AutoMirrored.Filled.List,
-                        label = if (showList) "Map" else "List",
-                        enabled = showList || canPickStar,
-                        onClick = { showList = !showList },
-                    )
+                    VerticalDivider(Modifier.height(32.dp).padding(horizontal = 4.dp))
+                    ToolbarActionButton(icon = Icons.Default.Close, label = "Exit", onClick = onBack)
                 }
             }
         },
@@ -491,7 +511,6 @@ fun AlignmentScreen(
                         alignsMount = alignsMount,
                         busy = mountCommandInFlight,
                         onConfirm = { if (alignsMount) confirmMountSync(target) else confirmPhoneSync(target) },
-                        onPickDifferentStar = { pendingTarget = null },
                         modifier = stepModifier,
                     )
 
@@ -526,6 +545,14 @@ fun AlignmentScreen(
                 )
             }
         }
+    }
+
+    if (showFilterSheet) {
+        MapFilterSheet(
+            filter = mapObjectFilter,
+            onFilterChange = onMapObjectFilterChange,
+            onDismiss = { showFilterSheet = false },
+        )
     }
 }
 
@@ -691,7 +718,8 @@ private fun StartMountAlignmentCard(
  *  before the telescope is actually pointed at it, would record a wrong direction. Under
  *  [alignsMount] that is still true after a GOTO: the slew gets close, but only the user's own
  *  centering makes "the telescope is on this star" a fact worth handing the mount, so the
- *  instruction says so rather than implying GOTO finished the job.
+ *  instruction says so rather than implying GOTO finished the job. Picking a different star while
+ *  this step is showing happens on the map, not through a button here -- see `canPickStar`.
  *
  *  [existingDirections] drives two warnings that only the sky map's full-catalog picker can
  *  trigger -- the list view's suggestions are already filtered clear of both. Neither blocks
@@ -706,7 +734,6 @@ private fun ConfirmSyncStep(
     alignsMount: Boolean,
     busy: Boolean,
     onConfirm: () -> Unit,
-    onPickDifferentStar: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val horizontal = target.currentHorizontal(location, nowEpochMillis)
@@ -754,13 +781,6 @@ private fun ConfirmSyncStep(
             modifier = Modifier.padding(bottom = 16.dp),
         )
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
-            OutlinedButton(
-                onClick = onPickDifferentStar,
-                enabled = !busy,
-                modifier = Modifier.padding(end = 12.dp),
-            ) {
-                Text("Choose a different star")
-            }
             Button(onClick = onConfirm, enabled = !busy) { Text("Confirm sync") }
         }
     }
@@ -805,16 +825,23 @@ private fun MountAlignmentCompleteCard(starCount: Int, busy: Boolean, onSave: ()
 /** The brightest currently-visible stars, sorted brightest-first. Only excludes stars too close
  *  to an already-*confirmed* point -- the fit itself rejects any too-close pair anyway, so
  *  suggestions don't also need to be mutually far apart from each other, which would needlessly
- *  shrink a list meant to offer real choice. */
+ *  shrink a list meant to offer real choice.
+ *
+ *  [filterMaxMagnitude] is [MapObjectFilter.maxMagnitude] from the map's own "Filter" sheet -- it
+ *  can only narrow the list further, never loosen it past [SUGGESTION_MAGNITUDE_LIMIT]: that limit
+ *  is tuned for alignment-star quality, not a display preference, so a user who's opened the filter
+ *  up wide to browse dim stars on the map still only gets sensible alignment candidates here. */
 private fun suggestStars(
     catalogRepository: CatalogRepository,
     location: ObserverLocation,
     nowEpochMillis: Long,
     alreadyChosen: List<Vector3>,
+    filterMaxMagnitude: Float?,
 ): List<StarObject> {
+    val magnitudeLimit = filterMaxMagnitude?.let { minOf(it, SUGGESTION_MAGNITUDE_LIMIT) } ?: SUGGESTION_MAGNITUDE_LIMIT
     return catalogRepository.all
         .filterIsInstance<StarObject>()
-        .filter { it.magnitude <= SUGGESTION_MAGNITUDE_LIMIT }
+        .filter { it.magnitude <= magnitudeLimit }
         .map { it to it.currentHorizontal(location, nowEpochMillis) }
         .filter { (_, horizontal) -> horizontal.altitude.degrees >= SUGGESTION_MIN_ALTITUDE_DEGREES }
         .filter { (_, horizontal) ->

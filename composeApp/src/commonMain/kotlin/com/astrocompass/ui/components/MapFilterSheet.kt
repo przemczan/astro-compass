@@ -31,8 +31,9 @@ private const val MAGNITUDE_LIMIT_STEP = 0.5f
 
 /** The map's "Filter" toolbar button opens this -- one toggle per [MapObjectCategory], each
  *  independently showing/hiding that category's objects on every screen sharing
- *  [rememberSkyMapSnapshot]'s filter (currently Map and Guidance; stars are never affected, and
- *  Alignment's map is stars-only regardless). */
+ *  [rememberSkyMapSnapshot]'s filter (Map, Guidance, Alignment). Stars are never gated by the
+ *  category toggles; Alignment's map is stars-only, so only [MapObjectFilter.maxMagnitude] ever
+ *  does anything there. */
 @Composable
 fun MapFilterSheet(
     filter: MapObjectFilter,
