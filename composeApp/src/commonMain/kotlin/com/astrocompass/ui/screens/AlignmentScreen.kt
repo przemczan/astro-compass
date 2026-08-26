@@ -240,12 +240,9 @@ fun AlignmentScreen(
         }
     }
 
-    // Centering happens here, in the pick handler, rather than in an effect keyed on
-    // pendingTarget: a live recenter would fight every pan the user makes while the pick stands,
-    // which is exactly the overview the map is left usable for.
+    // Deliberately doesn't touch the viewport: a pick shouldn't fight whatever pan/zoom the user
+    // already has set up, whether it comes from the map or the list.
     val pickStar: (StarObject) -> Unit = { star ->
-        val horizontal = star.currentHorizontal(location, currentEpochMillis())
-        viewport = viewport.copy(centerAzimuth = horizontal.azimuth, centerAltitude = horizontal.altitude)
         pendingTarget = star
         showList = false
     }
