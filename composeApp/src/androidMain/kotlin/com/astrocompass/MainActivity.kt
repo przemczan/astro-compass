@@ -14,6 +14,7 @@ import com.astrocompass.sensors.SensorSource
 import com.astrocompass.location.AndroidLocationProvider
 import com.astrocompass.location.AndroidMagneticDeclinationProvider
 import com.astrocompass.platesolve.AndroidCameraCapture
+import com.astrocompass.platesolve.AndroidCameraEnumerator
 import com.astrocompass.telescope.AndroidBluetoothTelescopeTransport
 import com.astrocompass.telescope.bondedTelescopeCandidates
 import com.russhwolf.settings.SharedPreferencesSettings
@@ -48,7 +49,8 @@ class MainActivity : ComponentActivity() {
             scope = scope,
             orientationSensor = AndroidOrientationSensor(applicationContext, sensorOverride),
             locationProvider = AndroidLocationProvider(applicationContext),
-            cameraCapture = AndroidCameraCapture(applicationContext),
+            cameraCapture = AndroidCameraCapture(applicationContext, settings),
+            cameraEnumerator = AndroidCameraEnumerator(applicationContext),
             magneticDeclinationProvider = AndroidMagneticDeclinationProvider(),
             settings = settings,
             bluetoothTransportFactory = { address -> AndroidBluetoothTelescopeTransport(applicationContext, address) },

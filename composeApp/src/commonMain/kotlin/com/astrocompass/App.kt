@@ -21,6 +21,7 @@ import com.astrocompass.ui.screens.GuidanceScreen
 import com.astrocompass.ui.screens.MapScreen
 import com.astrocompass.ui.screens.NightWizardListScreen
 import com.astrocompass.ui.screens.NightWizardOptionsScreen
+import com.astrocompass.ui.screens.PhoneCalibrationScreen
 import com.astrocompass.ui.screens.SearchScreen
 import com.astrocompass.ui.screens.SettingsScreen
 import com.astrocompass.ui.screens.TelescopeScreen
@@ -42,6 +43,7 @@ fun GuiderApp(container: AppContainer, onExitApp: () -> Unit = {}) {
         var selectedTarget by remember { mutableStateOf<SkyObject?>(null) }
         var isGuiding by remember { mutableStateOf(false) }
         var showAlignment by remember { mutableStateOf(false) }
+        var showPhoneCalibration by remember { mutableStateOf(false) }
         var showSettings by remember { mutableStateOf(false) }
         var showSearch by remember { mutableStateOf(false) }
         var showTelescope by remember { mutableStateOf(false) }
@@ -93,6 +95,10 @@ fun GuiderApp(container: AppContainer, onExitApp: () -> Unit = {}) {
         val guidingMode by container.guidingMode.collectAsState()
         val telescopeDirection by container.telescopeSkyDirection.collectAsState()
         val slewRatePreset by container.preferences.slewRatePreset.collectAsState()
+        val selectedCameraId by container.preferences.selectedCameraId.collectAsState()
+        val selectedPhysicalCameraId by container.preferences.selectedPhysicalCameraId.collectAsState()
+        val phoneCalibrationUsesMirror by container.preferences.phoneCalibrationUsesMirror.collectAsState()
+        val telescopeBoresight by container.preferences.telescopeBoresight.collectAsState()
 
         val location = resolvedLocation
 
@@ -143,6 +149,7 @@ fun GuiderApp(container: AppContainer, onExitApp: () -> Unit = {}) {
         val goBack: () -> Unit = {
             when {
                 showSettings -> showSettings = false
+                showPhoneCalibration -> showPhoneCalibration = false
                 showAlignment -> showAlignment = false
                 showTelescope -> showTelescope = false
                 showNightWizardOptions -> if (resumeWizardAfterOptions) resumeWizard() else cancelWizard()
@@ -153,7 +160,7 @@ fun GuiderApp(container: AppContainer, onExitApp: () -> Unit = {}) {
             }
         }
         BackHandler(
-            enabled = showSettings || showAlignment || showTelescope || showSearch || isGuiding ||
+            enabled = showSettings || showPhoneCalibration || showAlignment || showTelescope || showSearch || isGuiding ||
                 showNightWizardOptions || (nightWizardObjects != null && !nightWizardStarted),
             onBack = goBack,
         )
@@ -163,6 +170,22 @@ fun GuiderApp(container: AppContainer, onExitApp: () -> Unit = {}) {
                 preferences = container.preferences,
                 orientationSensor = container.orientationSensor,
                 resolvedLocation = location,
+                onBack = goBack,
+                modifier = Modifier.fillMaxSize(),
+            )
+
+            showPhoneCalibration -> PhoneCalibrationScreen(
+                cameraEnumerator = container.cameraEnumerator,
+                currentSelectedCameraId = selectedCameraId,
+                currentSelectedPhysicalCameraId = selectedPhysicalCameraId,
+                currentUsesMirror = phoneCalibrationUsesMirror,
+                currentBoresight = telescopeBoresight,
+                onSave = { cameraId, physicalCameraId, usesMirror, boresight ->
+                    container.preferences.setSelectedCameraId(cameraId)
+                    container.preferences.setSelectedPhysicalCameraId(physicalCameraId)
+                    container.preferences.setPhoneCalibrationUsesMirror(usesMirror)
+                    container.preferences.setTelescopeBoresight(boresight)
+                },
                 onBack = goBack,
                 modifier = Modifier.fillMaxSize(),
             )
@@ -191,6 +214,7 @@ fun GuiderApp(container: AppContainer, onExitApp: () -> Unit = {}) {
                 onStopAllMotion = { container.stopAllTelescopeMotion() },
                 onBack = goBack,
                 onOpenSettings = { showSettings = true },
+                onOpenPhoneCalibration = { showPhoneCalibration = true },
                 modifier = Modifier.fillMaxSize(),
             )
 

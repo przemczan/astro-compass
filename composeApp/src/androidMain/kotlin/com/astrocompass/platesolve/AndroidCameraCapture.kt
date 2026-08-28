@@ -10,12 +10,15 @@ import android.hardware.camera2.CameraDevice
 import android.hardware.camera2.CameraManager
 import android.hardware.camera2.CaptureFailure
 import android.hardware.camera2.CaptureRequest
+import android.hardware.camera2.params.OutputConfiguration
 import android.media.Image
 import android.media.ImageReader
+import android.os.Build
 import android.os.Handler
 import android.os.HandlerThread
 import android.util.Log
 import androidx.core.content.ContextCompat
+import com.russhwolf.settings.Settings
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import kotlinx.coroutines.Dispatchers
@@ -37,6 +40,15 @@ private const val MAX_FRAME_PIXELS = 1_500_000
 
 private const val TAG = "PlateSolveCamera"
 
+/** Mirrors [com.astrocompass.settings.AppPreferences]'s `KEY_SELECTED_CAMERA_ID` -- read directly
+ *  off [Settings] rather than through `AppPreferences` since this class is constructed in
+ *  `MainActivity` before `AppContainer`/`AppPreferences` exist, same as `MainActivity`'s own raw
+ *  read of `sensor_source_override` for [com.astrocompass.sensors.AndroidOrientationSensor]. */
+private const val KEY_SELECTED_CAMERA_ID = "selected_camera_id"
+/** Mirrors [com.astrocompass.settings.AppPreferences]'s `KEY_SELECTED_PHYSICAL_CAMERA_ID` -- see
+ *  [KEY_SELECTED_CAMERA_ID]'s doc comment for why this is read as a raw [Settings] key. */
+private const val KEY_SELECTED_PHYSICAL_CAMERA_ID = "selected_physical_camera_id"
+
 /**
  * Grabs one still frame directly via `android.hardware.camera2`, not CameraX.
  * `ProcessCameraProvider.getInstance()` was found to hang indefinitely on a real test device
@@ -52,7 +64,7 @@ private const val TAG = "PlateSolveCamera"
  * a [Handler] bound to a thread with a prepared `Looper`. Opens and closes the camera device
  * around each call rather than staying open, since this is strictly on-demand.
  */
-class AndroidCameraCapture(private val context: Context) : CameraCapture {
+class AndroidCameraCapture(private val context: Context, private val settings: Settings) : CameraCapture {
 
     private val handlerThread = HandlerThread("PlateSolveCamera").apply { start() }
     private val handler = Handler(handlerThread.looper)
@@ -64,14 +76,26 @@ class AndroidCameraCapture(private val context: Context) : CameraCapture {
         }
 
         val manager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
-        val cameraId = manager.cameraIdList.firstOrNull { id ->
+        val idList = manager.cameraIdList.toList()
+        // Prefer the phone-calibration wizard's saved selection; fall back to the first back-facing
+        // camera when nothing has been calibrated yet (or the saved id no longer exists), matching
+        // this class's original always-back-camera behavior.
+        val selectedCameraId = settings.getStringOrNull(KEY_SELECTED_CAMERA_ID)?.takeIf { it in idList }
+        val cameraId = selectedCameraId ?: idList.firstOrNull { id ->
             manager.getCameraCharacteristics(id).get(CameraCharacteristics.LENS_FACING) == CameraCharacteristics.LENS_FACING_BACK
         }
         if (cameraId == null) {
             Log.w(TAG, "captureFrame: no back-facing camera found")
             return null
         }
-        val characteristics = manager.getCameraCharacteristics(cameraId)
+        // Only trusted alongside a matching selectedCameraId -- a physical id saved for one logical
+        // camera means nothing (and camera2 would reject it) if the fallback above picked a
+        // different logical camera instead.
+        val physicalId = selectedCameraId?.let { physicalLensIdFor(manager, it) }
+        // The physical lens' own characteristics when one is targeted -- its native resolution,
+        // sensor orientation, and focal length are what the actual output stream reports, which can
+        // differ from the logical camera's fused defaults (see CameraDescriptor's doc comment).
+        val characteristics = manager.getCameraCharacteristics(physicalId ?: cameraId)
         val frameSize = pickFrameSize(characteristics)
         val imageReader = ImageReader.newInstance(frameSize.width, frameSize.height, ImageFormat.YUV_420_888, 2)
 
@@ -80,10 +104,10 @@ class AndroidCameraCapture(private val context: Context) : CameraCapture {
                 var device: CameraDevice? = null
                 var session: CameraCaptureSession? = null
                 try {
-                    Log.d(TAG, "captureFrame: opening camera $cameraId")
+                    Log.d(TAG, "captureFrame: opening camera $cameraId" + (physicalId?.let { " (physical $it)" } ?: ""))
                     device = openCamera(manager, cameraId)
                     Log.d(TAG, "captureFrame: creating capture session")
-                    session = createCaptureSession(device, imageReader)
+                    session = createCaptureSession(device, imageReader, physicalId)
                     Log.d(TAG, "captureFrame: capturing (manual ${EXPOSURE_NANOS / 1_000_000}ms exposure)")
                     val image = captureManualExposureFrame(device, session, imageReader)
                     Log.d(TAG, "captureFrame: frame received")
@@ -104,6 +128,15 @@ class AndroidCameraCapture(private val context: Context) : CameraCapture {
         }
         if (result == null) Log.w(TAG, "captureFrame: timed out or failed")
         return result
+    }
+
+    /** The saved physical-lens id, only if it's actually a physical sub-camera of [cameraId] --
+     *  physical camera targeting itself needs API 28 ([OutputConfiguration.setPhysicalCameraId]). */
+    private fun physicalLensIdFor(manager: CameraManager, cameraId: String): String? {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.P) return null
+        val savedPhysicalId = settings.getStringOrNull(KEY_SELECTED_PHYSICAL_CAMERA_ID) ?: return null
+        val physicalIds = manager.getCameraCharacteristics(cameraId).physicalCameraIds
+        return savedPhysicalId.takeIf { it in physicalIds }
     }
 
     /** The largest available YUV_420_888 output size under [MAX_FRAME_PIXELS], or the smallest
@@ -142,10 +175,13 @@ class AndroidCameraCapture(private val context: Context) : CameraCapture {
             )
         }
 
-    private suspend fun createCaptureSession(device: CameraDevice, imageReader: ImageReader): CameraCaptureSession =
+    private suspend fun createCaptureSession(device: CameraDevice, imageReader: ImageReader, physicalId: String?): CameraCaptureSession =
         suspendCancellableCoroutine { continuation ->
-            device.createCaptureSession(
-                listOf(imageReader.surface),
+            val outputConfig = OutputConfiguration(imageReader.surface).apply {
+                if (physicalId != null) setPhysicalCameraId(physicalId)
+            }
+            device.createCaptureSessionByOutputConfigurations(
+                listOf(outputConfig),
                 object : CameraCaptureSession.StateCallback() {
                     override fun onConfigured(session: CameraCaptureSession) {
                         continuation.invokeOnCancellation { session.close() }

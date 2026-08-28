@@ -4,6 +4,7 @@ import androidx.compose.ui.window.ComposeUIViewController
 import com.astrocompass.location.StubLocationProvider
 import com.astrocompass.location.StubMagneticDeclinationProvider
 import com.astrocompass.platesolve.StubCameraCapture
+import com.astrocompass.platesolve.StubCameraEnumerator
 import com.astrocompass.sensors.StubOrientationSensor
 import com.astrocompass.telescope.StubBluetoothTelescopeTransport
 import com.russhwolf.settings.NSUserDefaultsSettings
@@ -18,6 +19,7 @@ fun MainViewController() = ComposeUIViewController {
         orientationSensor = StubOrientationSensor(),
         locationProvider = StubLocationProvider(),
         cameraCapture = StubCameraCapture(),
+        cameraEnumerator = StubCameraEnumerator(),
         magneticDeclinationProvider = StubMagneticDeclinationProvider(),
         settings = NSUserDefaultsSettings(NSUserDefaults.standardUserDefaults),
         bluetoothTransportFactory = { StubBluetoothTelescopeTransport() },

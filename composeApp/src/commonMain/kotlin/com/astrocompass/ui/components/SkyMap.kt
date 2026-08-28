@@ -147,7 +147,7 @@ private const val MIN_PHOTO_DISPLAY_PX = 40f
  *  enough that most render above [MIN_DSO_APPARENT_RADIUS_PX] anyway. */
 private const val MIN_DSO_APPARENT_RADIUS_PX = 0.4f
 private const val DSO_SIZE_FADE_RANGE_PX = 0.4f
-private val MARKER_RADIUS_DP = 10.dp
+private val MARKER_RADIUS_DP = 20.dp
 private val HORIZON_SAMPLE_COUNT = 96
 private const val HORIZON_STROKE_WIDTH = 4f
 private const val GRATICULE_STROKE_WIDTH = 1.5f

@@ -5,6 +5,7 @@ import com.astrocompass.catalog.MapObjectFilter
 import com.astrocompass.guiding.CameraMounting
 import com.astrocompass.guiding.TelescopeAxis
 import com.astrocompass.location.ObserverLocation
+import com.astrocompass.platesolve.TelescopeBoresight
 import com.astrocompass.sensors.SensorSource
 import com.astrocompass.telescope.SlewRatePreset
 import com.astrocompass.ui.theme.AppTheme
@@ -65,6 +66,54 @@ class AppPreferences(private val settings: Settings) {
     fun setCameraMounting(mounting: CameraMounting) {
         cameraMounting.value = mounting
         settings.putString(KEY_CAMERA_MOUNTING, mounting.name)
+    }
+
+    /** Set by [com.astrocompass.ui.screens.PhoneCalibrationScreen]'s camera selector. Null = auto
+     *  (the first back-facing camera -- see `AndroidCameraCapture.captureFrame`'s fallback). */
+    val selectedCameraId = MutableStateFlow(settings.getStringOrNull(KEY_SELECTED_CAMERA_ID))
+    fun setSelectedCameraId(id: String?) {
+        selectedCameraId.value = id
+        if (id == null) settings.remove(KEY_SELECTED_CAMERA_ID) else settings.putString(KEY_SELECTED_CAMERA_ID, id)
+    }
+
+    /** Paired with [selectedCameraId]: names a specific physical lens under that (logical
+     *  multi-camera) id -- e.g. the wide lens fused into a phone's main rear camera -- since a
+     *  physical lens id isn't independently openable on its own (see
+     *  [com.astrocompass.platesolve.CameraDescriptor]'s doc comment). Null means "whatever the
+     *  logical camera's own default/fused output is," same as before this existed. */
+    val selectedPhysicalCameraId = MutableStateFlow(settings.getStringOrNull(KEY_SELECTED_PHYSICAL_CAMERA_ID))
+    fun setSelectedPhysicalCameraId(id: String?) {
+        selectedPhysicalCameraId.value = id
+        if (id == null) settings.remove(KEY_SELECTED_PHYSICAL_CAMERA_ID) else settings.putString(KEY_SELECTED_PHYSICAL_CAMERA_ID, id)
+    }
+
+    /** Set by [com.astrocompass.ui.screens.PhoneCalibrationScreen]'s mirror-choice step. Not yet
+     *  consumed by plate solving -- see that screen's doc comment. */
+    val phoneCalibrationUsesMirror = MutableStateFlow(settings.getBoolean(KEY_PHONE_CAL_MIRROR, false))
+    fun setPhoneCalibrationUsesMirror(usesMirror: Boolean) {
+        phoneCalibrationUsesMirror.value = usesMirror
+        settings.putBoolean(KEY_PHONE_CAL_MIRROR, usesMirror)
+    }
+
+    /** Where the telescope's optical axis falls in the camera frame -- see [TelescopeBoresight]'s
+     *  doc comment for why this is a separate concept from [CameraMounting]/`CameraIntrinsics`'
+     *  principal point. Null until [com.astrocompass.ui.screens.PhoneCalibrationScreen] has been
+     *  completed once. */
+    val telescopeBoresight = MutableStateFlow(readTelescopeBoresight())
+    fun setTelescopeBoresight(boresight: TelescopeBoresight?) {
+        telescopeBoresight.value = boresight
+        if (boresight == null) {
+            settings.remove(KEY_BORESIGHT_X)
+            settings.remove(KEY_BORESIGHT_Y)
+        } else {
+            settings.putFloat(KEY_BORESIGHT_X, boresight.xFraction)
+            settings.putFloat(KEY_BORESIGHT_Y, boresight.yFraction)
+        }
+    }
+    private fun readTelescopeBoresight(): TelescopeBoresight? {
+        val x = settings.getFloatOrNull(KEY_BORESIGHT_X) ?: return null
+        val y = settings.getFloatOrNull(KEY_BORESIGHT_Y) ?: return null
+        return TelescopeBoresight(x, y)
     }
 
     val manualLocation = MutableStateFlow(readManualLocation())
@@ -200,6 +249,14 @@ class AppPreferences(private val settings: Settings) {
         const val KEY_APP_THEME = "app_theme"
         const val KEY_SENSOR_OVERRIDE = "sensor_source_override"
         const val KEY_CAMERA_MOUNTING = "camera_mounting"
+        // Mirrors AndroidCameraCapture's own private KEY_SELECTED_CAMERA_ID string -- see that
+        // class's doc comment for why it reads this key directly rather than through this class.
+        const val KEY_SELECTED_CAMERA_ID = "selected_camera_id"
+        // Mirrors AndroidCameraCapture's own private KEY_SELECTED_PHYSICAL_CAMERA_ID string.
+        const val KEY_SELECTED_PHYSICAL_CAMERA_ID = "selected_physical_camera_id"
+        const val KEY_PHONE_CAL_MIRROR = "phone_cal_uses_mirror"
+        const val KEY_BORESIGHT_X = "telescope_boresight_x"
+        const val KEY_BORESIGHT_Y = "telescope_boresight_y"
         const val KEY_MANUAL_LAT = "manual_lat"
         const val KEY_MANUAL_LON = "manual_lon"
         const val KEY_MANUAL_ELEVATION = "manual_elevation"

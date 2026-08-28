@@ -18,6 +18,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.List
+import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Gamepad
@@ -162,6 +163,7 @@ fun AlignmentScreen(
     onStopAllMotion: () -> Unit,
     onBack: () -> Unit,
     onOpenSettings: () -> Unit,
+    onOpenPhoneCalibration: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     var pendingTarget by remember { mutableStateOf<StarObject?>(null) }
@@ -379,6 +381,9 @@ fun AlignmentScreen(
                                     restartRequested = true
                                 },
                             )
+                        }
+                        if (!alignsMount) {
+                            ToolbarActionButton(icon = Icons.Default.CameraAlt, label = "Cal. Phone", onClick = onOpenPhoneCalibration)
                         }
                         ToolbarActionButton(icon = Icons.Default.Visibility, label = "Filter", onClick = { showFilterSheet = true })
                         ToolbarActionButton(

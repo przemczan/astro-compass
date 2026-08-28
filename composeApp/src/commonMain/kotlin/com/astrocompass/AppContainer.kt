@@ -34,6 +34,7 @@ import com.astrocompass.location.LocationResolver
 import com.astrocompass.location.MagneticDeclinationProvider
 import com.astrocompass.location.ObserverLocation
 import com.astrocompass.platesolve.CameraCapture
+import com.astrocompass.platesolve.CameraEnumerator
 import com.astrocompass.platesolve.CapturedFrame
 import com.astrocompass.platesolve.CentroidDetector
 import com.astrocompass.platesolve.PlateSolver
@@ -90,6 +91,7 @@ class AppContainer(
     val orientationSensor: OrientationSensor,
     val locationProvider: LocationProvider,
     val cameraCapture: CameraCapture,
+    val cameraEnumerator: CameraEnumerator,
     magneticDeclinationProvider: MagneticDeclinationProvider,
     settings: Settings,
     tcpTransportFactory: (host: String, port: Int) -> TelescopeTransport = ::TcpTelescopeTransport,
