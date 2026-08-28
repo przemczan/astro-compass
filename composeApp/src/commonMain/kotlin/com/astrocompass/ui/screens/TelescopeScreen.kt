@@ -3,6 +3,7 @@
 package com.astrocompass.ui.screens
 
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
@@ -11,6 +12,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
@@ -34,6 +36,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.LifecycleResumeEffect
 import com.astrocompass.telescope.MountSyncStep
 import com.astrocompass.telescope.MountSyncStepOutcome
 import com.astrocompass.telescope.MountSyncStepResult
@@ -55,7 +58,8 @@ fun TelescopeScreen(
     initialTcpPort: Int,
     onConnectTcp: suspend (host: String, port: Int) -> Unit,
     showBluetoothSection: Boolean,
-    bondedBluetoothDevices: List<Pair<String, String>>,
+    bondedBluetoothDevices: () -> List<Pair<String, String>>,
+    onPairNewDevice: () -> Unit,
     initialBluetoothAddress: String?,
     onConnectBluetooth: suspend (address: String, name: String) -> Unit,
     onDisconnect: suspend () -> Unit,
@@ -66,6 +70,15 @@ fun TelescopeScreen(
     val report by reportedPosition.collectAsState()
     val syncResults by mountSyncResults.collectAsState()
     val scope = rememberCoroutineScope()
+
+    // Re-read on every resume, not just on first composition -- pairing happens in Android's own
+    // Bluetooth settings (see onPairNewDevice), which backgrounds this screen without destroying
+    // it, so a plain `remember` would keep showing the stale pre-pairing list on return.
+    var bondedDevices by remember { mutableStateOf(bondedBluetoothDevices()) }
+    LifecycleResumeEffect(Unit) {
+        bondedDevices = bondedBluetoothDevices()
+        onPauseOrDispose { }
+    }
 
     var hostText by remember { mutableStateOf(initialTcpHost) }
     var portText by remember { mutableStateOf(initialTcpPort.toString()) }
@@ -148,13 +161,14 @@ fun TelescopeScreen(
             if (showBluetoothSection) {
                 HorizontalDivider(Modifier.padding(vertical = 24.dp))
                 BluetoothSection(
-                    bondedDevices = bondedBluetoothDevices,
+                    bondedDevices = bondedDevices,
                     initialAddress = initialBluetoothAddress,
                     isBusy = isBusy,
                     isConnected = bluetoothConnected,
                     isBlockedByOtherTransport = bluetoothBlockedByOtherTransport,
                     onConnect = { address, name -> scope.launch { onConnectBluetooth(address, name) } },
                     onDisconnect = { scope.launch { onDisconnect() } },
+                    onPairNewDevice = onPairNewDevice,
                 )
             }
         }
@@ -170,6 +184,7 @@ private fun BluetoothSection(
     isBlockedByOtherTransport: Boolean,
     onConnect: (address: String, name: String) -> Unit,
     onDisconnect: () -> Unit,
+    onPairNewDevice: () -> Unit,
 ) {
     SectionTitle("Bluetooth")
 
@@ -182,6 +197,9 @@ private fun BluetoothSection(
                 "permission, and your telescope's adapter is paired in Android Settings.",
             style = MaterialTheme.typography.bodySmall,
         )
+        Row(Modifier.fillMaxWidth().padding(top = 16.dp), horizontalArrangement = Arrangement.Center) {
+            OutlinedButton(onClick = onPairNewDevice, enabled = !isBusy) { Text("Pair new device") }
+        }
         return
     }
 
@@ -189,20 +207,32 @@ private fun BluetoothSection(
     var selected by remember(bondedDevices) {
         mutableStateOf(bondedDevices.firstOrNull { (address, _) -> address == initialAddress } ?: bondedDevices.first())
     }
+    val selectionEnabled = !isBusy && !isConnected && !isBlockedByOtherTransport
 
-    Row {
-        OutlinedButton(
-            onClick = { expanded = true },
-            enabled = !isBusy && !isConnected && !isBlockedByOtherTransport,
-        ) { Text(selected.second) }
-        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
-            bondedDevices.forEach { device ->
-                DropdownMenuItem(
-                    text = { Text(device.second) },
-                    onClick = { selected = device; expanded = false },
-                )
+    // A plain OutlinedButton rather than ExposedDropdownMenuBox/OutlinedTextField -- the latter
+    // is a full-height (56dp) Material text field and looks mismatched next to the 40dp "Pair new
+    // device" button. The trailing dropdown-arrow icon is what marks this one as a selector
+    // instead of an action, at the same height as its neighbor.
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Box(Modifier.weight(1f)) {
+            OutlinedButton(
+                onClick = { expanded = true },
+                enabled = selectionEnabled,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text(selected.second, modifier = Modifier.weight(1f))
+                Icon(Icons.Default.ArrowDropDown, contentDescription = null)
+            }
+            DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+                bondedDevices.forEach { device ->
+                    DropdownMenuItem(
+                        text = { Text(device.second) },
+                        onClick = { selected = device; expanded = false },
+                    )
+                }
             }
         }
+        OutlinedButton(onClick = onPairNewDevice, enabled = !isBusy) { Text("Pair new device") }
     }
 
     Row(Modifier.fillMaxWidth().padding(top = 16.dp), horizontalArrangement = Arrangement.Center) {

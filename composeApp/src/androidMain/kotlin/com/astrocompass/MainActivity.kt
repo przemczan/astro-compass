@@ -1,7 +1,9 @@
 package com.astrocompass
 
 import android.Manifest
+import android.content.Intent
 import android.os.Bundle
+import android.provider.Settings
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -52,6 +54,7 @@ class MainActivity : ComponentActivity() {
             bluetoothTransportFactory = { address -> AndroidBluetoothTelescopeTransport(applicationContext, address) },
             supportsBluetoothTelescope = true,
             bondedBluetoothDevicesProvider = { bondedTelescopeCandidates(applicationContext) },
+            pairNewBluetoothDeviceAction = { startActivity(Intent(Settings.ACTION_BLUETOOTH_SETTINGS)) },
         )
 
         requestPermissions.launch(

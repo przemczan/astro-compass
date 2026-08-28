@@ -99,6 +99,7 @@ class AppContainer(
      *  rather than showing an always-empty paired-device list. */
     val supportsBluetoothTelescope: Boolean = false,
     private val bondedBluetoothDevicesProvider: () -> List<Pair<String, String>> = { emptyList() },
+    private val pairNewBluetoothDeviceAction: () -> Unit = {},
 ) {
     val preferences = AppPreferences(settings)
     val catalogRepository = CatalogRepository()
@@ -395,7 +396,13 @@ class AppContainer(
 
     /** Re-queried on every call rather than cached -- the paired-device list can change any time
      *  the user visits Android's own Bluetooth settings, and [com.astrocompass.ui.screens.TelescopeScreen]
-     *  is freshly composed each time it's navigated to, so this is naturally fresh with no extra
-     *  refresh mechanism needed. */
+     *  re-queries it on resume (see its `LifecycleResumeEffect`) so a pairing done via
+     *  [pairNewBluetoothDevice] while the screen stays on-screen is picked up too. */
     fun bondedBluetoothDevices(): List<Pair<String, String>> = bondedBluetoothDevicesProvider()
+
+    /** Opens the platform's Bluetooth settings so the user can pair a new device -- Android/iOS
+     *  have no API to launch the "pair new device" step directly, so this is the closest
+     *  equivalent to both "open pairing" and "open Bluetooth settings" on every platform. No-op
+     *  where unsupported (iOS). */
+    fun pairNewBluetoothDevice() = pairNewBluetoothDeviceAction()
 }

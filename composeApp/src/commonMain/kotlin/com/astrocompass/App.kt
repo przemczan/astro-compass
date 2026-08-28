@@ -194,13 +194,7 @@ fun GuiderApp(container: AppContainer, onExitApp: () -> Unit = {}) {
                 modifier = Modifier.fillMaxSize(),
             )
 
-            // container.bondedBluetoothDevices() is a Bluetooth-service IPC -- hoisted behind
-            // `remember` rather than called straight in TelescopeScreen's argument list, since
-            // GuiderApp recomposes on every sensor reading while the compass fallback is active
-            // (CompassAbsoluteReference self-refreshes continuously) and would otherwise repeat
-            // that call dozens of times a second while this screen is open.
             showTelescope -> {
-                val bondedBluetoothDevices = remember(showTelescope) { container.bondedBluetoothDevices() }
                 TelescopeScreen(
                     connectionState = container.telescopeConnection.state,
                     reportedPosition = container.telescopeConnection.reportedPosition,
@@ -215,7 +209,8 @@ fun GuiderApp(container: AppContainer, onExitApp: () -> Unit = {}) {
                         )
                     },
                     showBluetoothSection = container.supportsBluetoothTelescope,
-                    bondedBluetoothDevices = bondedBluetoothDevices,
+                    bondedBluetoothDevices = { container.bondedBluetoothDevices() },
+                    onPairNewDevice = { container.pairNewBluetoothDevice() },
                     initialBluetoothAddress = container.preferences.telescopeBluetoothAddress.value,
                     onConnectBluetooth = { address, name ->
                         container.preferences.setTelescopeBluetoothAddress(address)
