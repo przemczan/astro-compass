@@ -297,6 +297,10 @@ fun GuiderApp(container: AppContainer, onExitApp: () -> Unit = {}) {
                 val target = wizardObjects?.getOrNull(nightWizardIndex) ?: selectedTarget!!
                 GuidanceScreen(
                     target = target,
+                    onSelectTarget = { newTarget ->
+                        selectedTarget = newTarget
+                        container.preferences.setLastTargetId(newTarget.id)
+                    },
                     pointingSource = container.activePointingSource,
                     telescopeDirection = telescopeDirection,
                     absoluteReference = container.absoluteReference.current,

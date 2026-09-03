@@ -121,6 +121,11 @@ private sealed interface PlateSolveUiState {
 @Composable
 fun GuidanceScreen(
     target: SkyObject,
+    // Retargeting from the map -- see the SkyMap's onSelect wiring below. Only reachable outside
+    // the Night Wizard (wizardProgress == null) and while the telescope isn't mid-slew, since a
+    // tap here doesn't fit the wizard's fixed Prev/Next list and a moving mount is already
+    // committed to the target it was sent to.
+    onSelectTarget: (SkyObject) -> Unit,
     pointingSource: SkyPointingSource,
     /** Marked in blue while a connected mount is reporting -- see
      *  [com.astrocompass.AppContainer.telescopeSkyDirection]. In Telescope mode this is the same
@@ -192,6 +197,11 @@ fun GuidanceScreen(
         catalogFilter = mapObjectFilter::matches,
     )
 
+    // Tracks a commanded GOTO that hasn't yet landed -- blocks picking a new target off the map
+    // mid-slew (see onSelectTarget's doc). Cleared by Abort or once the arrow reports on-target,
+    // the same signal the haptic below already keys off; keyed on target's identity so switching
+    // targets (including the wizard's Prev/Next) starts each one clean.
+    var telescopeSlewing by remember(target) { mutableStateOf(false) }
     var mapViewport by remember { mutableStateOf(SkyMapViewport.DEFAULT) }
     var followPointing by remember { mutableStateOf(true) }
     LaunchedEffect(currentPointing, followPointing) {
@@ -323,10 +333,17 @@ fun GuidanceScreen(
                                                 icon = Icons.Default.GpsFixed,
                                                 label = "GOTO",
                                                 onClick = {
+                                                    telescopeSlewing = true
                                                     scope.launch {
                                                         when (val outcome = onGoto()) {
-                                                            is SlewOutcome.Rejected -> snackbarHostState.showSnackbar(outcome.reason)
-                                                            SlewOutcome.NoConnection -> snackbarHostState.showSnackbar("Telescope not connected")
+                                                            is SlewOutcome.Rejected -> {
+                                                                telescopeSlewing = false
+                                                                snackbarHostState.showSnackbar(outcome.reason)
+                                                            }
+                                                            SlewOutcome.NoConnection -> {
+                                                                telescopeSlewing = false
+                                                                snackbarHostState.showSnackbar("Telescope not connected")
+                                                            }
                                                             SlewOutcome.Started -> {}
                                                         }
                                                     }
@@ -335,7 +352,7 @@ fun GuidanceScreen(
                                             ToolbarActionButton(
                                                 icon = Icons.Default.Stop,
                                                 label = "Abort",
-                                                onClick = { scope.launch { onAbortSlew() } },
+                                                onClick = { scope.launch { onAbortSlew() }; telescopeSlewing = false },
                                             )
                                             ToolbarActionButton(
                                                 icon = Icons.Default.Tune,
@@ -381,7 +398,10 @@ fun GuidanceScreen(
         val haptic = LocalHapticFeedback.current
         var wasOnTarget by remember { mutableStateOf(false) }
         LaunchedEffect(guidance.isOnTarget) {
-            if (guidance.isOnTarget && !wasOnTarget) haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+            if (guidance.isOnTarget) {
+                if (!wasOnTarget) haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                telescopeSlewing = false
+            }
             wasOnTarget = guidance.isOnTarget
         }
 
@@ -420,6 +440,7 @@ fun GuidanceScreen(
                             ?.takeIf { pointingOrigin != PointingOrigin.TELESCOPE }
                             ?.let(SkyMapMarker::telescope),
                     ),
+                    onSelect = if (wizardProgress == null && !telescopeSlewing) onSelectTarget else null,
                     modifier = Modifier.fillMaxSize(),
                 )
                 MapFollowZoomControls(
