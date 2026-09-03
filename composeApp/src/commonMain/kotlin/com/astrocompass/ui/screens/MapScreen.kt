@@ -49,6 +49,7 @@ import com.astrocompass.catalog.CatalogRepository
 import com.astrocompass.catalog.MapObjectFilter
 import com.astrocompass.catalog.SkyObject
 import com.astrocompass.guiding.GuidingMode
+import com.astrocompass.guiding.PointingOrigin
 import com.astrocompass.guiding.SkyPointingSource
 import com.astrocompass.guiding.currentHorizontal
 import com.astrocompass.location.ObserverLocation
@@ -62,6 +63,7 @@ import com.astrocompass.ui.components.SkyMapMarker
 import com.astrocompass.ui.components.ToolbarActionButton
 import com.astrocompass.ui.components.rememberSkyMapSnapshot
 import com.astrocompass.ui.skymap.SkyMapViewport
+import com.astrocompass.ui.theme.TelescopeBlue
 import kotlinx.coroutines.launch
 
 /** How long a second back press has to follow the first to actually exit, rather than just
@@ -201,6 +203,7 @@ fun MapScreen(
         // pointing isn't the reason someone opened it. Same recenter-on-tick pattern as
         // GuidanceScreen's follow effect otherwise, just gated behind an opt-in toggle.
         val currentPointing by pointingSource.currentSkyDirection.collectAsState()
+        val pointingOrigin by pointingSource.origin.collectAsState()
         var followPointing by remember { mutableStateOf(false) }
         LaunchedEffect(currentPointing, followPointing) {
             val pointing = currentPointing
@@ -228,7 +231,17 @@ fun MapScreen(
                                 label = target.displayName,
                             )
                         },
-                        telescopeDirection?.let(SkyMapMarker::telescope),
+                        currentPointing?.let { direction ->
+                            SkyMapMarker(
+                                direction = direction,
+                                color = if (pointingOrigin == PointingOrigin.TELESCOPE) TelescopeBlue else MaterialTheme.colorScheme.secondary,
+                            )
+                        },
+                        // In Telescope mode the current-pointing marker above already sits exactly
+                        // where the mount reports -- see the same dedup in GuidanceScreen.
+                        telescopeDirection
+                            ?.takeIf { pointingOrigin != PointingOrigin.TELESCOPE }
+                            ?.let(SkyMapMarker::telescope),
                     ),
                     onSelect = { obj -> onSelectTarget(obj) },
                     modifier = Modifier.fillMaxSize(),

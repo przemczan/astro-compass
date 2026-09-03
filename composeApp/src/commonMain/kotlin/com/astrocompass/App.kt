@@ -393,10 +393,7 @@ fun GuiderApp(container: AppContainer, onExitApp: () -> Unit = {}) {
                 onOpenAlignment = { showAlignment = true },
                 onOpenNightWizard = { showNightWizardOptions = true },
                 onOpenTelescope = { showTelescope = true },
-                // A confirmed exit clears any star alignment first -- a stale one from a previous
-                // session (potentially a different, unknown mounting) is worse than none at all;
-                // the compass fallback re-engages automatically, same as after a fresh install.
-                onExitApp = { container.clearAlignment(); onExitApp() },
+                onExitApp = onExitApp,
                 modifier = Modifier.fillMaxSize(),
             )
         }

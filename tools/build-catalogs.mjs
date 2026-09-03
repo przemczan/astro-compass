@@ -188,6 +188,11 @@ const NGC_TYPE_TO_ORDINAL = {
 // Nonexistent-object and duplicate/alias entries add noise without value for a guider.
 const NGC_EXCLUDED_TYPES = new Set(['NonEx', 'Dup']);
 
+// OpenNGC's "Common names" column is comma-separated with no language tag, and we take name [0]
+// as the display name -- across the whole dataset that's always the expected English name except
+// here, where it's "Amas de l'Ecu de Sobieski,Wild Duck Cluster" (French first).
+const COMMON_NAME_OVERRIDES = { NGC6705: 'Wild Duck Cluster' };
+
 async function buildDeepSky() {
   const ngcText = await loadText(NGC_URL, args.ngc);
   const addendumText = await loadText(ADDENDUM_URL, args.addendum);
@@ -224,7 +229,7 @@ async function buildDeepSky() {
         decRad: parseDecSexagesimal(decStr) * DEG_TO_RAD,
         mag,
         constellation: r[idx.Const] || '',
-        commonName: (r[idx['Common names']] || '').split(',')[0].trim(),
+        commonName: COMMON_NAME_OVERRIDES[r[idx.Name]] ?? (r[idx['Common names']] || '').split(',')[0].trim(),
         messier: messierStr ? parseInt(messierStr, 10) : 0,
         majAxisArcmin,
         minAxisArcmin,
