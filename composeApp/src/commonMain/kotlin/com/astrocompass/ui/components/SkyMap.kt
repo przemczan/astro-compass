@@ -52,6 +52,7 @@ import com.astrocompass.ui.skymap.SkyMapScene
 import com.astrocompass.ui.skymap.SkyMapViewport
 import com.astrocompass.ui.theme.TelescopeBlue
 import kotlin.math.atan2
+import kotlin.math.hypot
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
@@ -71,6 +72,15 @@ data class SkyMapMarker(
         fun telescope(direction: Vector3): SkyMapMarker = SkyMapMarker(direction, TelescopeBlue)
     }
 }
+
+/** The straight (great-circle) path from [start] to [end], drawn as a trail of arrowheads that
+ *  shrink and fade toward [end] -- see [drawGuidancePath]. Guidance-screen-only: nothing else
+ *  passes this to [SkyMap]. */
+data class SkyMapGuidancePath(
+    val start: Vector3,
+    val end: Vector3,
+    val color: Color,
+)
 
 /** A resolved, ready-to-draw bundled photo for one object at the current zoom --
  *  [rotationDegrees] is the clockwise screen rotation that points the (assumed north-up) photo's
@@ -148,6 +158,27 @@ private const val MIN_PHOTO_DISPLAY_PX = 40f
 private const val MIN_DSO_APPARENT_RADIUS_PX = 0.4f
 private const val DSO_SIZE_FADE_RANGE_PX = 0.4f
 private val MARKER_RADIUS_DP = 20.dp
+private val GUIDANCE_ARROW_LENGTH_DP = 42.dp
+private val GUIDANCE_ARROW_WIDTH_DP = 21.dp
+/** The on-screen gap after each arrowhead, as a multiple of *that arrow's own* length -- 0.5x
+ *  means the gap is half as long as the arrow it follows. Walked in screen pixels rather than sky
+ *  degrees (see [drawGuidancePath]) so the trail's on-screen scale stays constant as the user
+ *  zooms; expressed relative to each arrow's own (already-shrunk) length rather than a single
+ *  fixed pixel gap so the gaps taper down in step with the arrows as they shrink toward the target,
+ *  instead of looking increasingly sparse relative to them. */
+private const val GUIDANCE_PATH_GAP_TO_ARROW_LENGTH_RATIO = 0.5f
+/** Safety cap on the arc-length walk in [drawGuidancePath] -- with no artificial minimum spacing,
+ *  a pathological case (e.g. a huge separation at a very tight zoom) could otherwise walk many
+ *  more steps than are useful to draw. */
+private const val GUIDANCE_PATH_MAX_ARROWS = 40
+/** How far ahead (in the same [0, 1] `t` used to walk the path) each arrowhead looks to find its
+ *  own heading -- small enough to approximate the local tangent, not the path's overall direction. */
+private const val GUIDANCE_PATH_TANGENT_STEP = 0.01
+/** The smallest (closest-to-target) arrowhead is this fraction of the largest (closest-to-start) --
+ *  i.e. the starting arrow is 3x the target-end arrow, per the guidance-path spec. */
+private const val GUIDANCE_PATH_END_SIZE_FRACTION = 1f / 3f
+/** The closest-to-target arrowhead fades to this fraction of full opacity. */
+private const val GUIDANCE_PATH_END_ALPHA_FRACTION = 0.5f
 private val HORIZON_SAMPLE_COUNT = 96
 private const val HORIZON_STROKE_WIDTH = 4f
 private const val GRATICULE_STROKE_WIDTH = 1.5f
@@ -177,6 +208,7 @@ fun SkyMap(
     onManualInteraction: () -> Unit = {},
     highlightedIds: Set<String> = emptySet(),
     markers: List<SkyMapMarker> = emptyList(),
+    guidancePath: SkyMapGuidancePath? = null,
     constellationLines: List<List<Vector3>> = emptyList(),
     /** ENU direction of "true equatorial north" for each object that has a bundled photo -- see
      *  [SkyMapDirectionCache.northOffsetDirections]'s doc comment for why this needs observer
@@ -344,6 +376,8 @@ fun SkyMap(
             // always-labeled solar system bodies).
             marker.label?.let { label -> drawObjectLabel(screenPoint, label, textMeasurer, labelStyle) }
         }
+
+        guidancePath?.let { drawGuidancePath(it, projection, ::toScreen, pixelsPerUnit) }
 
         // Tracks which DeepSkyObjects actually drew something (photo, or a schematic glyph that
         // cleared MIN_DSO_APPARENT_RADIUS_PX) -- the label pass below must agree, or a bright-but-
@@ -745,6 +779,80 @@ private fun DrawScope.drawMarker(center: Offset, color: Color) {
     drawLine(color, Offset(center.x + radius * 0.6f, center.y), Offset(center.x + radius * 1.6f, center.y), strokeWidth = 3f)
     drawLine(color, Offset(center.x, center.y - radius * 1.6f), Offset(center.x, center.y - radius * 0.6f), strokeWidth = 3f)
     drawLine(color, Offset(center.x, center.y + radius * 0.6f), Offset(center.x, center.y + radius * 1.6f), strokeWidth = 3f)
+}
+
+/** Draws [path] as a trail of arrowheads walking its great circle from start to end -- shrinking
+ *  to [GUIDANCE_PATH_END_SIZE_FRACTION] of their starting size and fading to
+ *  [GUIDANCE_PATH_END_ALPHA_FRACTION] opacity as they approach the target, so the trail reads as
+ *  flowing toward it rather than a uniform dashed line. Each arrow's heading comes from the
+ *  path's own local tangent ([GUIDANCE_PATH_TANGENT_STEP] further along `t`, projected the same
+ *  as the arrow itself) rather than the straight line to the target, so it stays correct even
+ *  though the great circle isn't a straight line under the stereographic projection.
+ *
+ *  Arrows are placed by walking a fixed *pixel* arc length (converted from `t` via [pixelsPerUnit]
+ *  and the small-angle approximation `radians ~= pixels / pixelsPerUnit`, same as used elsewhere
+ *  for angular sizing, e.g. [SkyMap]'s photo scaling) -- never a fixed angular spacing -- so both
+ *  the arrows' base size and the gap between them stay constant on screen regardless of the map's
+ *  zoom or how far away the target is; only the number that fit changes (see
+ *  [GUIDANCE_PATH_GAP_TO_ARROW_LENGTH_RATIO]'s doc for why the gap itself still shrinks per-arrow). */
+private fun DrawScope.drawGuidancePath(
+    path: SkyMapGuidancePath,
+    projection: StereographicProjection,
+    toScreen: (PlanePoint) -> Offset,
+    pixelsPerUnit: Float,
+) {
+    val start = path.start.normalized()
+    val end = path.end.normalized()
+    val totalPx = start.angleTo(end).radians * pixelsPerUnit
+    val fullArrowLengthPx = GUIDANCE_ARROW_LENGTH_DP.toPx()
+    if (totalPx < fullArrowLengthPx) return // too short for even one arrow to fit cleanly
+
+    var offsetPx = fullArrowLengthPx * (1f + GUIDANCE_PATH_GAP_TO_ARROW_LENGTH_RATIO)
+    var arrowsDrawn = 0
+    while (offsetPx < totalPx && arrowsDrawn < GUIDANCE_PATH_MAX_ARROWS) {
+        val t = (offsetPx / totalPx).toDouble()
+        val sizeFraction = 1f - (1f - GUIDANCE_PATH_END_SIZE_FRACTION) * t.toFloat()
+        val lengthPx = fullArrowLengthPx * sizeFraction
+
+        val aheadT = (t + GUIDANCE_PATH_TANGENT_STEP).coerceAtMost(1.0)
+        val screenPoint = projection.project(start.slerp(end, t))?.let(toScreen)
+        val screenAhead = projection.project(start.slerp(end, aheadT))?.let(toScreen)
+        if (screenPoint != null && screenAhead != null) {
+            val forwardLength = hypot(screenAhead.x - screenPoint.x, screenAhead.y - screenPoint.y)
+            if (forwardLength >= 1e-3f) {
+                val forward = Offset((screenAhead.x - screenPoint.x) / forwardLength, (screenAhead.y - screenPoint.y) / forwardLength)
+                val perpendicular = Offset(-forward.y, forward.x)
+                val alphaFraction = 1f - (1f - GUIDANCE_PATH_END_ALPHA_FRACTION) * t.toFloat()
+                drawGuidanceArrow(screenPoint, forward, perpendicular, sizeFraction, alphaFraction, path.color)
+            }
+        }
+
+        offsetPx += lengthPx * (1f + GUIDANCE_PATH_GAP_TO_ARROW_LENGTH_RATIO)
+        arrowsDrawn++
+    }
+}
+
+private fun DrawScope.drawGuidanceArrow(
+    center: Offset,
+    forward: Offset,
+    perpendicular: Offset,
+    sizeFraction: Float,
+    alphaFraction: Float,
+    color: Color,
+) {
+    val length = GUIDANCE_ARROW_LENGTH_DP.toPx() * sizeFraction
+    val width = GUIDANCE_ARROW_WIDTH_DP.toPx() * sizeFraction
+    val tip = Offset(center.x + forward.x * length * 0.5f, center.y + forward.y * length * 0.5f)
+    val back = Offset(center.x - forward.x * length * 0.5f, center.y - forward.y * length * 0.5f)
+    val backLeft = Offset(back.x + perpendicular.x * width * 0.5f, back.y + perpendicular.y * width * 0.5f)
+    val backRight = Offset(back.x - perpendicular.x * width * 0.5f, back.y - perpendicular.y * width * 0.5f)
+    val path = Path().apply {
+        moveTo(tip.x, tip.y)
+        lineTo(backLeft.x, backLeft.y)
+        lineTo(backRight.x, backRight.y)
+        close()
+    }
+    drawPath(path, color.copy(alpha = color.alpha * alphaFraction))
 }
 
 private fun DrawScope.drawObjectLabel(

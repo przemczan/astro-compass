@@ -40,6 +40,22 @@ data class Vector3(val x: Double, val y: Double, val z: Double) {
         return Angle.ofRadians(kotlin.math.acos(cosAngle.coerceIn(-1.0, 1.0)))
     }
 
+    /** Spherical interpolation along the great circle from this direction to [other], both
+     *  re-normalized first -- used to trace a straight-line path across the sky (e.g. the
+     *  guidance trail in [com.astrocompass.ui.components.SkyMap]) rather than a chord through
+     *  3D space. [t] = 0 returns this direction, [t] = 1 returns [other]. */
+    fun slerp(other: Vector3, t: Double): Vector3 {
+        val from = normalized()
+        val to = other.normalized()
+        val cosOmega = (from dot to).coerceIn(-1.0, 1.0)
+        val omega = kotlin.math.acos(cosOmega)
+        if (omega < 1e-9) return from
+        val sinOmega = kotlin.math.sin(omega)
+        val fromCoefficient = kotlin.math.sin((1 - t) * omega) / sinOmega
+        val toCoefficient = kotlin.math.sin(t * omega) / sinOmega
+        return from * fromCoefficient + to * toCoefficient
+    }
+
     companion object {
         val ZERO = Vector3(0.0, 0.0, 0.0)
         val UNIT_X = Vector3(1.0, 0.0, 0.0)

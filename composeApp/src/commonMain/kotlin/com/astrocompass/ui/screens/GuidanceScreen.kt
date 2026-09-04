@@ -77,18 +77,19 @@ import com.astrocompass.guiding.currentHorizontal
 import com.astrocompass.location.ObserverLocation
 import com.astrocompass.telescope.SlewOutcome
 import com.astrocompass.telescope.SlewRatePreset
-import com.astrocompass.ui.components.ArrowIndicator
 import com.astrocompass.ui.components.DeltaBar
 import com.astrocompass.ui.components.GuidingModeButton
 import com.astrocompass.ui.components.MAP_ZOOM_STEP_FACTOR
 import com.astrocompass.ui.components.MapFollowZoomControls
 import com.astrocompass.ui.components.mapOverlayScrim
 import com.astrocompass.ui.components.SkyMap
+import com.astrocompass.ui.components.SkyMapGuidancePath
 import com.astrocompass.ui.components.SkyMapMarker
 import com.astrocompass.ui.components.TelescopeOptionsSheet
 import com.astrocompass.ui.components.ToolbarActionButton
 import com.astrocompass.ui.components.rememberSkyMapSnapshot
 import com.astrocompass.ui.skymap.SkyMapViewport
+import com.astrocompass.ui.theme.GuidancePathBlue
 import com.astrocompass.ui.theme.OnTargetGreen
 import com.astrocompass.ui.theme.TelescopeBlue
 import kotlinx.coroutines.delay
@@ -101,9 +102,8 @@ private const val SYNC_AGE_AMBER_SECONDS = 5 * 60L
 private const val SYNC_AGE_RED_SECONDS = 15 * 60L
 private const val STABILIZATION_MILLIS = 2_000L
 
-// ~25% smaller than the previous 110.dp / 24.sp (headlineSmall) so the readout takes up less of
-// the map without the target marker underneath it staying hidden as long.
-private val ARROW_SIZE = 80.dp
+// Smaller than headlineSmall's default 24.sp so the readout takes up less of the map without the
+// target marker underneath it staying hidden as long.
 private val ANGLE_TEXT_SIZE = 18.sp
 
 private val WarningAmber = Color(0xFFFFA000)
@@ -426,6 +426,11 @@ fun GuidanceScreen(
                     // In Telescope mode the current-pointing marker already sits exactly where the
                     // mount reports, so it takes the blue itself rather than a second marker being
                     // stacked on the same spot -- on-target green still wins over both.
+                    guidancePath = SkyMapGuidancePath(
+                        start = currentPointing!!,
+                        end = targetDirection,
+                        color = GuidancePathBlue,
+                    ),
                     markers = listOfNotNull(
                         SkyMapMarker(direction = targetDirection, color = MaterialTheme.colorScheme.primary, label = target.displayName),
                         SkyMapMarker(
@@ -461,7 +466,6 @@ fun GuidanceScreen(
                         .mapOverlayScrim()
                         .padding(horizontal = 24.dp, vertical = 16.dp),
                 ) {
-                    ArrowIndicator(guidance.arrowAngleDegrees, guidance.isOnTarget, arrowSize = ARROW_SIZE)
                     Text(
                         "${formatDegrees(guidance.separationDegrees)}° away",
                         style = MaterialTheme.typography.headlineSmall.copy(fontSize = ANGLE_TEXT_SIZE),
