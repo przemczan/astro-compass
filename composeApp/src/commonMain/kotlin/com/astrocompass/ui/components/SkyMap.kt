@@ -177,8 +177,20 @@ private const val GUIDANCE_PATH_TANGENT_STEP = 0.01
 /** The smallest (closest-to-target) arrowhead is this fraction of the largest (closest-to-start) --
  *  i.e. the starting arrow is 3x the target-end arrow, per the guidance-path spec. */
 private const val GUIDANCE_PATH_END_SIZE_FRACTION = 1f / 3f
+/** The starting (closest-to-start) arrowhead's opacity, as a fraction of the path color's own full
+ *  opacity -- fading further to [GUIDANCE_PATH_END_ALPHA_FRACTION] by the target. */
+private const val GUIDANCE_PATH_START_ALPHA_FRACTION = 0.75f
 /** The closest-to-target arrowhead fades to this fraction of full opacity. */
 private const val GUIDANCE_PATH_END_ALPHA_FRACTION = 0.5f
+/** The first arrowhead is drawn this many times wider than [GUIDANCE_ARROW_WIDTH_DP] (before the
+ *  usual [GUIDANCE_PATH_END_SIZE_FRACTION] shrink is applied) -- a distinct visual cue that this is
+ *  the *start* of the trail, separate from the shrink-toward-target sizing every arrow already
+ *  gets. Tapers back down to the normal 1x width by [GUIDANCE_PATH_WIDTH_TAPER_T], not all the way
+ *  to the target, so only the lead of the trail reads as flared. */
+private const val GUIDANCE_PATH_START_WIDTH_MULTIPLIER = 3f
+/** `t` (the same [0, 1] fraction along the path used everywhere else) at which the width flare
+ *  from [GUIDANCE_PATH_START_WIDTH_MULTIPLIER] has fully tapered back to 1x -- the path's midpoint. */
+private const val GUIDANCE_PATH_WIDTH_TAPER_T = 0.5f
 private val HORIZON_SAMPLE_COUNT = 96
 private const val HORIZON_STROKE_WIDTH = 4f
 private const val GRATICULE_STROKE_WIDTH = 1.5f
@@ -781,20 +793,81 @@ private fun DrawScope.drawMarker(center: Offset, color: Color) {
     drawLine(color, Offset(center.x, center.y + radius * 0.6f), Offset(center.x, center.y + radius * 1.6f), strokeWidth = 3f)
 }
 
-/** Draws [path] as a trail of arrowheads walking its great circle from start to end -- shrinking
- *  to [GUIDANCE_PATH_END_SIZE_FRACTION] of their starting size and fading to
- *  [GUIDANCE_PATH_END_ALPHA_FRACTION] opacity as they approach the target, so the trail reads as
- *  flowing toward it rather than a uniform dashed line. Each arrow's heading comes from the
- *  path's own local tangent ([GUIDANCE_PATH_TANGENT_STEP] further along `t`, projected the same
- *  as the arrow itself) rather than the straight line to the target, so it stays correct even
- *  though the great circle isn't a straight line under the stereographic projection.
+/** The straight line the trail actually follows: altitude and azimuth (shortest signed direction)
+ *  interpolated independently and linearly -- the same alt-az decomposition
+ *  [com.astrocompass.guiding.GuidanceCalculator] uses for the arrow and delta bars, not the
+ *  greatcircle geodesic between the two directions. Guiding a phone/telescope means dialing in
+ *  altitude and azimuth (or cross-track) separately, so a great-circle path -- the *shortest* path
+ *  across the sky, but not one that corresponds to any single "move it this way" instruction --
+ *  reads as pointing somewhere other than where the ALT/AZ delta bars say to go. This keeps the
+ *  path consistent with the rest of the guidance UI instead of technically-shortest but misleading. */
+private fun interpolateGuidancePath(start: Vector3, end: Vector3, t: Double): Vector3 {
+    val from = HorizontalCoordinates.fromEnu(start)
+    val to = HorizontalCoordinates.fromEnu(end)
+    val altitude = from.altitude + (to.altitude - from.altitude) * t
+    val azimuth = from.azimuth + (to.azimuth - from.azimuth).normalizedSigned() * t
+    return HorizontalCoordinates(azimuth, altitude).toEnu()
+}
+
+/** How far along [interpolateGuidancePath] (from `0` at [start] toward `1` at [end]) the path
+ *  stays on screen before crossing the canvas edge -- `1.0` if [end] itself is on screen. Assumes
+ *  [start] is on screen and the path crosses the edge at most once between the two (true for the
+ *  guidance trail in practice: the map follows the current-pointing marker, and the walk below
+ *  only ever needs *a* reasonable cutoff, not an exact one); falls back to `1.0` -- i.e. no
+ *  clipping -- if [start] itself isn't on screen, since there is then no known-on-screen point to
+ *  search from. Used so a target that has panned off the visible map still shows the trail
+ *  terminating right at the edge it would exit through, rather than skipping straight to a point
+ *  that isn't actually drawn, or not drawing the trail at all. */
+private fun DrawScope.onScreenPathFraction(
+    start: Vector3,
+    end: Vector3,
+    projection: StereographicProjection,
+    toScreen: (PlanePoint) -> Offset,
+): Double {
+    fun isOnScreen(t: Double): Boolean {
+        val screen = projection.project(interpolateGuidancePath(start, end, t))?.let(toScreen) ?: return false
+        return screen.x in 0f..size.width && screen.y in 0f..size.height
+    }
+
+    if (!isOnScreen(0.0) || isOnScreen(1.0)) return 1.0
+
+    var onScreenT = 0.0
+    var offScreenT = 1.0
+    repeat(20) {
+        val mid = (onScreenT + offScreenT) / 2.0
+        if (isOnScreen(mid)) onScreenT = mid else offScreenT = mid
+    }
+    return onScreenT
+}
+
+/** Draws [path] as a trail of arrowheads walking [interpolateGuidancePath] from start to end --
+ *  shrinking to [GUIDANCE_PATH_END_SIZE_FRACTION] of their starting size and fading from
+ *  [GUIDANCE_PATH_START_ALPHA_FRACTION] to [GUIDANCE_PATH_END_ALPHA_FRACTION] opacity as they
+ *  approach the target, so the trail reads as flowing toward it rather than a uniform dashed line.
+ *  The lead arrow is also flared [GUIDANCE_PATH_START_WIDTH_MULTIPLIER] wide, tapering to normal
+ *  width by the path's midpoint (see [guidanceArrowWidthMultiplier]), marking which end is "now"
+ *  without relying on size/opacity alone. Each arrow's heading comes from the path's own local
+ *  tangent ([GUIDANCE_PATH_TANGENT_STEP] further along `t`, projected the same as the arrow
+ *  itself) rather than the straight line to the target, so it stays correct even though the alt-az
+ *  path isn't a straight line under the stereographic projection either.
+ *
+ *  If the target is off screen ([onScreenPathFraction] < 1), the whole shrink/fade/width
+ *  progression -- and the "1" end of `t` throughout this function -- refers to the edge of the
+ *  screen, not the real target: the trail always reads as terminating exactly where it leaves the
+ *  visible map, the same way it terminates at the target when the target is on screen, and picks
+ *  back up following the real target the moment it pans back into view.
  *
  *  Arrows are placed by walking a fixed *pixel* arc length (converted from `t` via [pixelsPerUnit]
  *  and the small-angle approximation `radians ~= pixels / pixelsPerUnit`, same as used elsewhere
  *  for angular sizing, e.g. [SkyMap]'s photo scaling) -- never a fixed angular spacing -- so both
  *  the arrows' base size and the gap between them stay constant on screen regardless of the map's
  *  zoom or how far away the target is; only the number that fit changes (see
- *  [GUIDANCE_PATH_GAP_TO_ARROW_LENGTH_RATIO]'s doc for why the gap itself still shrinks per-arrow). */
+ *  [GUIDANCE_PATH_GAP_TO_ARROW_LENGTH_RATIO]'s doc for why the gap itself still shrinks per-arrow).
+ *  The pixel budget itself is still the great-circle separation ([Vector3.angleTo]) -- the same
+ *  angle the "N° away" readout shows -- since the alt-az path is only ever slightly longer than
+ *  that for the separations guiding actually deals with, and this keeps the arrow count reading
+ *  in step with that on-screen number (when the target itself is on screen; the off-screen case
+ *  above scales this down to the visible portion instead). */
 private fun DrawScope.drawGuidancePath(
     path: SkyMapGuidancePath,
     projection: StereographicProjection,
@@ -803,7 +876,8 @@ private fun DrawScope.drawGuidancePath(
 ) {
     val start = path.start.normalized()
     val end = path.end.normalized()
-    val totalPx = start.angleTo(end).radians * pixelsPerUnit
+    val onScreenFraction = onScreenPathFraction(start, end, projection, toScreen)
+    val totalPx = start.angleTo(end).radians * onScreenFraction * pixelsPerUnit
     val fullArrowLengthPx = GUIDANCE_ARROW_LENGTH_DP.toPx()
     if (totalPx < fullArrowLengthPx) return // too short for even one arrow to fit cleanly
 
@@ -815,15 +889,17 @@ private fun DrawScope.drawGuidancePath(
         val lengthPx = fullArrowLengthPx * sizeFraction
 
         val aheadT = (t + GUIDANCE_PATH_TANGENT_STEP).coerceAtMost(1.0)
-        val screenPoint = projection.project(start.slerp(end, t))?.let(toScreen)
-        val screenAhead = projection.project(start.slerp(end, aheadT))?.let(toScreen)
+        val screenPoint = projection.project(interpolateGuidancePath(start, end, onScreenFraction * t))?.let(toScreen)
+        val screenAhead = projection.project(interpolateGuidancePath(start, end, onScreenFraction * aheadT))?.let(toScreen)
         if (screenPoint != null && screenAhead != null) {
             val forwardLength = hypot(screenAhead.x - screenPoint.x, screenAhead.y - screenPoint.y)
             if (forwardLength >= 1e-3f) {
                 val forward = Offset((screenAhead.x - screenPoint.x) / forwardLength, (screenAhead.y - screenPoint.y) / forwardLength)
                 val perpendicular = Offset(-forward.y, forward.x)
-                val alphaFraction = 1f - (1f - GUIDANCE_PATH_END_ALPHA_FRACTION) * t.toFloat()
-                drawGuidanceArrow(screenPoint, forward, perpendicular, sizeFraction, alphaFraction, path.color)
+                val alphaFraction = GUIDANCE_PATH_START_ALPHA_FRACTION -
+                    (GUIDANCE_PATH_START_ALPHA_FRACTION - GUIDANCE_PATH_END_ALPHA_FRACTION) * t.toFloat()
+                val widthMultiplier = guidanceArrowWidthMultiplier(t.toFloat())
+                drawGuidanceArrow(screenPoint, forward, perpendicular, sizeFraction, widthMultiplier, alphaFraction, path.color)
             }
         }
 
@@ -832,16 +908,25 @@ private fun DrawScope.drawGuidancePath(
     }
 }
 
+/** Linearly tapers [GUIDANCE_PATH_START_WIDTH_MULTIPLIER] down to 1x between `t = 0` and
+ *  [GUIDANCE_PATH_WIDTH_TAPER_T], then holds at 1x for the rest of the path. */
+private fun guidanceArrowWidthMultiplier(t: Float): Float {
+    if (t >= GUIDANCE_PATH_WIDTH_TAPER_T) return 1f
+    val progress = t / GUIDANCE_PATH_WIDTH_TAPER_T
+    return GUIDANCE_PATH_START_WIDTH_MULTIPLIER - (GUIDANCE_PATH_START_WIDTH_MULTIPLIER - 1f) * progress
+}
+
 private fun DrawScope.drawGuidanceArrow(
     center: Offset,
     forward: Offset,
     perpendicular: Offset,
     sizeFraction: Float,
+    widthMultiplier: Float,
     alphaFraction: Float,
     color: Color,
 ) {
     val length = GUIDANCE_ARROW_LENGTH_DP.toPx() * sizeFraction
-    val width = GUIDANCE_ARROW_WIDTH_DP.toPx() * sizeFraction
+    val width = GUIDANCE_ARROW_WIDTH_DP.toPx() * sizeFraction * widthMultiplier
     val tip = Offset(center.x + forward.x * length * 0.5f, center.y + forward.y * length * 0.5f)
     val back = Offset(center.x - forward.x * length * 0.5f, center.y - forward.y * length * 0.5f)
     val backLeft = Offset(back.x + perpendicular.x * width * 0.5f, back.y + perpendicular.y * width * 0.5f)

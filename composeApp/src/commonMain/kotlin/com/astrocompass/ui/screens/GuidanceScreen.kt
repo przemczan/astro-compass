@@ -98,8 +98,6 @@ import kotlinx.coroutines.launch
 
 private const val UPDATE_INTERVAL_MS = 50L
 private const val CATALOG_REFRESH_INTERVAL_MS = 5_000L
-private const val SYNC_AGE_AMBER_SECONDS = 5 * 60L
-private const val SYNC_AGE_RED_SECONDS = 15 * 60L
 private const val STABILIZATION_MILLIS = 2_000L
 
 // Smaller than headlineSmall's default 24.sp so the readout takes up less of the map without the
@@ -204,12 +202,18 @@ fun GuidanceScreen(
     var telescopeSlewing by remember(target) { mutableStateOf(false) }
     var mapViewport by remember { mutableStateOf(SkyMapViewport.DEFAULT) }
     var followPointing by remember { mutableStateOf(true) }
-    LaunchedEffect(currentPointing, followPointing) {
-        val pointing = currentPointing
-        if (followPointing && pointing != null) {
-            val horizontal = HorizontalCoordinates.fromEnu(pointing)
-            mapViewport = mapViewport.copy(centerAzimuth = horizontal.azimuth, centerAltitude = horizontal.altitude)
-        }
+    // Deriving this directly during composition, rather than centering mapViewport itself via a
+    // LaunchedEffect keyed on currentPointing, matters: that LaunchedEffect's state write landed
+    // one recomposition *after* the currentPointing update that triggered it, so the current-
+    // position marker (and the guidance path, projected under the same viewport) would render one
+    // frame off-center before the camera caught up -- visible as a small jump on every sensor
+    // sample while panning/tilting the phone. This has no such gap: displayedViewport is exactly
+    // in step with currentPointing on every recomposition, sensor-driven or not.
+    val displayedViewport = if (followPointing && currentPointing != null) {
+        val horizontal = HorizontalCoordinates.fromEnu(currentPointing!!)
+        mapViewport.copy(centerAzimuth = horizontal.azimuth, centerAltitude = horizontal.altitude)
+    } else {
+        mapViewport
     }
 
     // The run token is deliberately separate from the displayed state: a LaunchedEffect must never
@@ -405,64 +409,72 @@ fun GuidanceScreen(
             wasOnTarget = guidance.isOnTarget
         }
 
-        Column(
-            Modifier.padding(padding).fillMaxSize().padding(24.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-        ) {
-            ReferenceStatusSection(pointingOrigin = pointingOrigin, reference = activeReference, nowEpochMillis = now)
-
-            // The map fills essentially the whole remaining screen -- same as Search/Alignment's
-            // map -- with the arrow/separation/delta-bar readout as overlays on top of it rather
-            // than separate sections competing with it for vertical space.
-            Box(Modifier.fillMaxWidth().weight(1f).padding(top = 16.dp)) {
-                SkyMap(
-                    directions = snapshot.directions,
-                    viewport = mapViewport,
-                    onViewportChange = { mapViewport = it },
-                    onManualInteraction = { followPointing = false },
-                    constellationLines = snapshot.constellationLines,
-                    northOffsetDirections = snapshot.northOffsetDirections,
-                    showObjectPhotos = showObjectPhotos,
-                    // In Telescope mode the current-pointing marker already sits exactly where the
-                    // mount reports, so it takes the blue itself rather than a second marker being
-                    // stacked on the same spot -- on-target green still wins over both.
-                    guidancePath = SkyMapGuidancePath(
-                        start = currentPointing!!,
-                        end = targetDirection,
-                        color = GuidancePathBlue,
+        // A single Box -- map plus every overlay on top of it -- rather than a Column with the
+        // status text as a sibling above the map: matching Search/Alignment's structure this way
+        // (not just their padding) is what keeps MapFollowZoomControls at the same distance from
+        // the screen border on every screen that has it, since the map now starts flush at the top
+        // of the content area on all of them rather than being pushed down by a sibling here.
+        Box(Modifier.padding(padding).fillMaxSize()) {
+            SkyMap(
+                directions = snapshot.directions,
+                viewport = displayedViewport,
+                onViewportChange = { mapViewport = it },
+                onManualInteraction = { followPointing = false },
+                constellationLines = snapshot.constellationLines,
+                northOffsetDirections = snapshot.northOffsetDirections,
+                showObjectPhotos = showObjectPhotos,
+                // In Telescope mode the current-pointing marker already sits exactly where the
+                // mount reports, so it takes the blue itself rather than a second marker being
+                // stacked on the same spot -- on-target green still wins over both.
+                guidancePath = SkyMapGuidancePath(
+                    start = currentPointing!!,
+                    end = targetDirection,
+                    color = GuidancePathBlue,
+                ),
+                markers = listOfNotNull(
+                    SkyMapMarker(direction = targetDirection, color = MaterialTheme.colorScheme.primary, label = target.displayName),
+                    SkyMapMarker(
+                        direction = currentPointing!!,
+                        color = when {
+                            guidance.isOnTarget -> OnTargetGreen
+                            pointingOrigin == PointingOrigin.TELESCOPE -> TelescopeBlue
+                            else -> MaterialTheme.colorScheme.secondary
+                        },
                     ),
-                    markers = listOfNotNull(
-                        SkyMapMarker(direction = targetDirection, color = MaterialTheme.colorScheme.primary, label = target.displayName),
-                        SkyMapMarker(
-                            direction = currentPointing!!,
-                            color = when {
-                                guidance.isOnTarget -> OnTargetGreen
-                                pointingOrigin == PointingOrigin.TELESCOPE -> TelescopeBlue
-                                else -> MaterialTheme.colorScheme.secondary
-                            },
-                        ),
-                        telescopeDirection
-                            ?.takeIf { pointingOrigin != PointingOrigin.TELESCOPE }
-                            ?.let(SkyMapMarker::telescope),
-                    ),
-                    onSelect = if (wizardProgress == null && !telescopeSlewing) onSelectTarget else null,
-                    modifier = Modifier.fillMaxSize(),
-                )
-                MapFollowZoomControls(
-                    isFollowing = followPointing,
-                    onEnableFollow = { followPointing = true },
-                    onZoomIn = { mapViewport = mapViewport.zoomedBy(MAP_ZOOM_STEP_FACTOR) },
-                    onZoomOut = { mapViewport = mapViewport.zoomedBy(1f / MAP_ZOOM_STEP_FACTOR) },
-                    modifier = Modifier.align(Alignment.TopEnd).padding(top = 8.dp, end = 8.dp),
-                )
+                    telescopeDirection
+                        ?.takeIf { pointingOrigin != PointingOrigin.TELESCOPE }
+                        ?.let(SkyMapMarker::telescope),
+                ),
+                onSelect = if (wizardProgress == null && !telescopeSlewing) onSelectTarget else null,
+                modifier = Modifier.fillMaxSize(),
+            )
+            MapFollowZoomControls(
+                isFollowing = followPointing,
+                onEnableFollow = { followPointing = true },
+                onZoomIn = { mapViewport = mapViewport.zoomedBy(MAP_ZOOM_STEP_FACTOR) },
+                onZoomOut = { mapViewport = mapViewport.zoomedBy(1f / MAP_ZOOM_STEP_FACTOR) },
+                modifier = Modifier.align(Alignment.TopEnd).padding(top = 8.dp, end = 8.dp),
+            )
 
-                // The arrow/separation readout sits at the top of the map, not the center, so it
-                // never covers the target marker. The delta bars stay pinned to the opposite edge,
-                // at the bottom.
+            ReferenceStatusSection(
+                pointingOrigin = pointingOrigin,
+                reference = activeReference,
+                modifier = Modifier.align(Alignment.TopStart)
+                    .padding(8.dp)
+                    .mapOverlayScrim()
+                    .padding(horizontal = 16.dp, vertical = 12.dp),
+            )
+
+            // The separation readout sits directly above the delta bars, both pinned to the
+            // bottom edge, so the arrow-angle text stays with the numbers it summarizes instead
+            // of splitting across opposite ends of the map.
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                modifier = Modifier.align(Alignment.BottomCenter).fillMaxWidth(),
+            ) {
                 Column(
                     horizontalAlignment = Alignment.CenterHorizontally,
-                    modifier = Modifier.align(Alignment.TopCenter)
-                        .padding(top = 8.dp)
+                    modifier = Modifier.padding(bottom = 8.dp)
                         .mapOverlayScrim()
                         .padding(horizontal = 24.dp, vertical = 16.dp),
                 ) {
@@ -476,7 +488,7 @@ fun GuidanceScreen(
                 }
 
                 Column(
-                    Modifier.align(Alignment.BottomCenter).fillMaxWidth()
+                    Modifier.fillMaxWidth()
                         .mapOverlayScrim(RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp))
                         .padding(16.dp),
                 ) {
@@ -527,16 +539,20 @@ fun GuidanceScreen(
  *  a mount, Sync for a star fit, Align for the compass fallback) lives in the bottom toolbar, see
  *  [GuidanceScreen]'s `showGuidanceActions` block. [reference] describes the *phone's* alignment
  *  and is only consulted under [PointingOrigin.PHONE_SENSORS] -- a connected mount needs none of
- *  that, see [PointingOrigin]'s doc. */
+ *  that, see [PointingOrigin]'s doc. Renders nothing once a star alignment is in effect -- the sync
+ *  age isn't worth a permanent overlay on the map, and "Sync on this object" in the bottom toolbar
+ *  already covers refreshing it. */
 @Composable
-private fun ReferenceStatusSection(pointingOrigin: PointingOrigin, reference: AbsoluteReferenceState?, nowEpochMillis: Long) {
-    Column(Modifier.fillMaxWidth()) {
-        when (pointingOrigin) {
-            PointingOrigin.TELESCOPE -> TelescopeStatusText()
-            PointingOrigin.PHONE_SENSORS -> when (reference?.origin) {
-                ReferenceOrigin.STAR_ALIGNMENT -> SyncAgeText(reference.establishedAtEpochMillis, nowEpochMillis)
-                ReferenceOrigin.COMPASS, null -> CompassModeText()
-            }
+private fun ReferenceStatusSection(
+    pointingOrigin: PointingOrigin,
+    reference: AbsoluteReferenceState?,
+    modifier: Modifier = Modifier,
+) {
+    when (pointingOrigin) {
+        PointingOrigin.TELESCOPE -> Column(modifier.fillMaxWidth()) { TelescopeStatusText() }
+        PointingOrigin.PHONE_SENSORS -> when (reference?.origin) {
+            ReferenceOrigin.STAR_ALIGNMENT -> {}
+            ReferenceOrigin.COMPASS, null -> Column(modifier.fillMaxWidth()) { CompassModeText() }
         }
     }
 }
@@ -544,17 +560,6 @@ private fun ReferenceStatusSection(pointingOrigin: PointingOrigin, reference: Ab
 @Composable
 private fun TelescopeStatusText() {
     Text("Telescope connected", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodyMedium)
-}
-
-@Composable
-private fun SyncAgeText(syncedAtEpochMillis: Long, nowEpochMillis: Long) {
-    val ageSeconds = (nowEpochMillis - syncedAtEpochMillis) / 1000
-    val color = when {
-        ageSeconds > SYNC_AGE_RED_SECONDS -> MaterialTheme.colorScheme.error
-        ageSeconds > SYNC_AGE_AMBER_SECONDS -> WarningAmber
-        else -> MaterialTheme.colorScheme.onSurfaceVariant
-    }
-    Text("Synced ${formatAge(ageSeconds)} ago", color = color, style = MaterialTheme.typography.bodyMedium)
 }
 
 /** No error figure quoted: the compass fallback's yaw error varies wildly with how much steel is
@@ -695,10 +700,5 @@ private fun PlateSolveDialog(
     }
 }
 
-private fun formatAge(seconds: Long): String = when {
-    seconds < 60 -> "${seconds}s"
-    seconds < 3600 -> "${seconds / 60}m"
-    else -> "${seconds / 3600}h ${(seconds % 3600) / 60}m"
-}
 
 private fun formatDegrees(value: Double): String = (kotlin.math.round(value * 10) / 10).toString()
