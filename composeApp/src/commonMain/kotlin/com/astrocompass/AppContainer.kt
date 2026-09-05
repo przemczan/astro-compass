@@ -53,6 +53,7 @@ import com.astrocompass.telescope.TelescopeDirection
 import com.astrocompass.telescope.TelescopeEndpoint
 import com.astrocompass.telescope.TelescopePointingSource
 import com.astrocompass.telescope.TelescopeTransport
+import com.astrocompass.update.AppUpdater
 import com.russhwolf.settings.Settings
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -91,6 +92,7 @@ class AppContainer(
     val locationProvider: LocationProvider,
     val cameraCapture: CameraCapture,
     val cameraEnumerator: CameraEnumerator,
+    val appUpdater: AppUpdater,
     magneticDeclinationProvider: MagneticDeclinationProvider,
     settings: Settings,
     tcpTransportFactory: (host: String, port: Int) -> TelescopeTransport = ::TcpTelescopeTransport,

@@ -187,6 +187,7 @@ fun GuiderApp(container: AppContainer, onExitApp: () -> Unit = {}) {
             showSettings -> SettingsScreen(
                 preferences = container.preferences,
                 orientationSensor = container.orientationSensor,
+                appUpdater = container.appUpdater,
                 resolvedLocation = location,
                 onBack = goBack,
                 modifier = Modifier.fillMaxSize(),
