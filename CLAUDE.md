@@ -114,15 +114,19 @@ failure notice, the finished-fit card — rather than a `when` that swaps the ma
 recenters the viewport on it and drops `SkyMap`'s `onSelect` to null, so the map stays pannable as
 an overview while only the pending overlay's own buttons can change or commit the pick.
 
-**`GuidingMode` picks which instrument the run aligns — never both.** `PHONE` fits the phone's
-`AlignmentModel` as above and never touches the mount. `TELESCOPE` drives OnStep's own stateful
-alignment and captures no sensor reading at all: with the phone in the user's hand rather than on
-the telescope, a sensor direction taken at confirm time describes nothing. That sequence is
-`:A<n>#` to arm (a deliberate "Start" step, because it re-homes the mount, discards its model and
-forces tracking on, and the protocol has no cancel), then one `:CM#` per confirmed star, then
-`:AW#` to persist. `:CM#` is used rather than `:A+#` because it passes `sync = true` in OnStep's
-`alignAddStar`, taking the point from the `:Sr`/`:Sd` target just set instead of whatever a prior
-`:MS#` slew left behind — so a confirm without a GOTO in front of it is still correct.
+**`AlignmentSession.mode` (a `GuidingMode`) picks which instrument the run aligns — never both.**
+`PHONE` fits the phone's `AlignmentModel` as above and never touches the mount. `TELESCOPE` instead
+drives OnStep's own stateful alignment and captures no sensor reading at all: with the phone in the
+user's hand rather than on the telescope, a sensor direction taken at confirm time describes
+nothing. That sequence is `:A<n>#` to arm (a deliberate "Start" step, because it re-homes the mount,
+discards its model and forces tracking on, and the protocol has no cancel), then one `:CM#` per
+confirmed star, then `:AW#` to persist. `:CM#` is used rather than `:A+#` because it passes
+`sync = true` in OnStep's `alignAddStar`, taking the point from the `:Sr`/`:Sd` target just set
+instead of whatever a prior `:MS#` slew left behind — so a confirm without a GOTO in front of it is
+still correct. **This branch is currently unreachable**: `mode` is a wizard-local choice and nothing
+calls `switchTo(TELESCOPE)` today (there is no app-wide guiding-mode selector any more — see
+"Design & UI Conventions" below); a dedicated telescope alignment wizard is planned separately to
+pick it, rather than reviving this path through the phone wizard's own Star Sync step.
 
 `:A<n>#` runs `home.reset()`, which declares wherever the mount is standing to be home — start it
 off-home and the mount's reported position jumps to home's coordinates (az 0 / alt 0 on an alt-az)
@@ -148,9 +152,9 @@ The run lives in `AlignmentSession`, owned by `GuiderApp`, not remembered inside
 menu's Settings entry tears it down (`showSettings` is matched ahead of `showAlignment`),
 and an armed mount sequence that the app forgot would offer "Start" again — re-homing a mount two
 stars into a good run. For the same reason the two modes keep entirely separate progress (star
-counts included) and switching between them discards neither: `guidingMode` derives to `PHONE` the
-instant a link drops, so clearing on a mode change would wipe the memory of an armed mount on any
-Bluetooth blip.
+counts included) and switching between them discards neither — a future caller flipping `mode`
+mid-run (a dropped Bluetooth link, say) must not silently wipe the memory of an armed mount along
+with it.
 
 **Guiding offers no manual alignment correction at all** — no "Platesolve" button, no yaw
 re-sync. A camera setup corrects itself in the background, and a sensors-only one is re-aligned by
@@ -273,12 +277,15 @@ Stock **Material 3** — prefer default component styling over custom looks.
 - **Search opens over the screen that launched it and returns to it** — `App.kt`'s `when` matches
   `showSearch` ahead of guidance and the wizard, and `onSelectResult` only marks the target and
   closes Search, so the `when` falls through to whatever was underneath.
-- **Guiding is phone-only for now, though mount connection is not.** `AppBottomBar`'s
-  `SHOW_MODE_MENU_ITEM` hides the Mode menu entry and `selectedGuidingMode` is seeded to `PHONE`, so
-  `GuidingMode.TELESCOPE` is unreachable — but every telescope feature stays compiled and wired
-  behind that one flag. The Telescope menu entry itself (`SHOW_TELESCOPE_ENTRIES`) is unhidden:
-  connecting to a mount and running its own alignment is useful on its own even while guiding stays
-  phone-driven.
+- **Guiding is phone-only, permanently — there is no app-wide guiding-mode selector.**
+  `GuidanceScreen`/`MapScreen` always drive their arrow off `AppContainer.pointingService`
+  (the phone's own sensors). A connected mount is a parallel, independent capability instead: its
+  own reported position is shown as its own "Telescope" map marker
+  (`AppContainer.telescopeSkyDirection`), and `GuidanceScreen`'s "Telescope" toolbar button opens
+  `TelescopeSheet` — a connect prompt when nothing is connected, or GOTO/Abort, GOTO speed, and
+  tracking controls when something is — never a mode switch that changes what drives guidance.
+  `AppBottomBar`'s Telescope menu entry (`SHOW_TELESCOPE_ENTRIES`) is separate again: connecting to
+  a mount and running its own alignment is useful on its own even while guiding stays phone-driven.
 - **Location is a hard prerequisite** — Search, Guidance, and Alignment all gate on
   `LocationResolver.resolved` being non-null rather than rendering altitudes from a silent default.
 

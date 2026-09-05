@@ -4,13 +4,11 @@ import com.astrocompass.astro.Vector3
 import com.astrocompass.astro.coords.CoordinateTransforms
 import com.astrocompass.astro.time.AstroTime
 import com.astrocompass.astro.time.currentEpochMillis
-import com.astrocompass.guiding.PointingOrigin
 import com.astrocompass.guiding.SkyPointingSource
 import com.astrocompass.location.ObserverLocation
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
@@ -55,8 +53,6 @@ class TelescopePointingSource(
                 report != null &&
                 (nowMillis - report.epochMillis) <= staleThresholdMillis
         }.stateIn(scope, SharingStarted.Eagerly, false)
-
-    override val origin: StateFlow<PointingOrigin> = MutableStateFlow(PointingOrigin.TELESCOPE)
 }
 
 private fun tickerFlow(intervalMillis: Long): Flow<Long> = flow {

@@ -10,7 +10,6 @@ import com.astrocompass.astro.Vector3
 import com.astrocompass.catalog.CatalogRepository
 import com.astrocompass.catalog.MapObjectFilter
 import com.astrocompass.catalog.SkyObject
-import com.astrocompass.guiding.GuidingMode
 import com.astrocompass.guiding.TelescopeAxis
 import com.astrocompass.location.ObserverLocation
 import com.astrocompass.platesolve.CameraEnumerator
@@ -47,7 +46,6 @@ fun AlignmentScreen(
     onMapObjectFilterChange: (MapObjectFilter) -> Unit,
     onCapturePoint: (target: SkyObject, source: AlignmentSource, nowEpochMillis: Long) -> AlignmentPoint?,
     onSaveModel: (AlignmentModel) -> Unit,
-    guidingMode: GuidingMode,
     selectedCameraId: String?,
     selectedPhysicalCameraId: String?,
     telescopeBoresight: TelescopeBoresight?,
@@ -103,7 +101,6 @@ fun AlignmentScreen(
             onMapObjectFilterChange = onMapObjectFilterChange,
             onCapturePoint = onCapturePoint,
             onSaveModel = onSaveModel,
-            guidingMode = guidingMode,
             onGoto = onGoto,
             onBeginMountAlignment = onBeginMountAlignment,
             onReadAtHome = onReadAtHome,

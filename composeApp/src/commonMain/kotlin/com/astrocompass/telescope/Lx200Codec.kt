@@ -177,7 +177,7 @@ object Lx200Codec {
      *  An OnStep extension, not classic LX200. Ack via [parseAck]. */
     fun unpark(): String = ":hR#"
 
-    // -- Mount options (TelescopeOptionsSheet): GOTO speed and tracking ------------------------
+    // -- Mount options (TelescopeSheet): GOTO speed and tracking ------------------------------
     //
     // Verified against OnStepX's own source (hjd1964/OnStepX, `Goto.command.cpp` and
     // `Mount.command.cpp`) for the same reason the sync commands above were.

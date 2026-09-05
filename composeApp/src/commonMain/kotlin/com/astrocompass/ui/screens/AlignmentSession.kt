@@ -54,13 +54,18 @@ enum class AlignmentStep {
  * would re-home a mount that was two stars into a good run.
  *
  * The two modes therefore keep **entirely separate** progress -- separate star counts included --
- * and [switchTo] discards neither. Clearing on a mode change would look tidy but reopens exactly
- * the hazard above through a second door: [com.astrocompass.AppContainer.guidingMode] derives to
- * [GuidingMode.PHONE] the moment a link drops, so a Bluetooth blip mid-run would wipe the app's
- * memory of an armed mount with no way to know it had.
+ * and [switchTo] discards neither, for the same reason: a future caller that flips [mode] mid-run
+ * (a dropped Bluetooth link, say) must not silently wipe the memory of an armed mount along with it.
+ *
+ * Nothing calls [switchTo] today -- see [mode]'s own doc.
  */
 class AlignmentSession {
-    private var mode by mutableStateOf(GuidingMode.PHONE)
+    // Nothing calls switchTo(TELESCOPE) today: the mount's own native alignment sequence below
+    // (markMountAlignmentArmed/addMountAlignedStar and StarAlignmentStep's alignsMount branch) is
+    // fully built but currently unreachable -- a dedicated telescope alignment wizard is planned
+    // separately to pick it, rather than reviving this path through the phone wizard.
+    var mode by mutableStateOf(GuidingMode.PHONE)
+        private set
     private val alignsMount get() = mode == GuidingMode.TELESCOPE
 
     /** Which wizard step is showing. Held here, not in the screen, for the same reason as the run

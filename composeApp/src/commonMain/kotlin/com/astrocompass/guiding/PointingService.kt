@@ -3,7 +3,6 @@ package com.astrocompass.guiding
 import com.astrocompass.astro.Vector3
 import com.astrocompass.sensors.OrientationSensor
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
@@ -38,5 +37,4 @@ class PointingService(
             .stateIn(scope, SharingStarted.Eagerly, absoluteReference.current.value != null)
 
     override val isReady: StateFlow<Boolean> get() = isAligned
-    override val origin: StateFlow<PointingOrigin> = MutableStateFlow(PointingOrigin.PHONE_SENSORS)
 }

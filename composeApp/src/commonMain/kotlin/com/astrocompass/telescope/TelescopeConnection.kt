@@ -170,8 +170,8 @@ interface TelescopeConnection {
     suspend fun setTracking(enabled: Boolean): Boolean
 
     /** The mount's current tracking state, read on demand rather than polled -- only
-     *  [com.astrocompass.ui.components.TelescopeOptionsSheet] needs it, and only while it's open,
-     *  so there's nothing to gain from adding a second periodic command alongside the position
-     *  poll. Null when there's no connection or the mount didn't answer. */
+     *  [com.astrocompass.ui.components.TelescopeSheet] needs it, and only while it's open, so
+     *  there's nothing to gain from adding a second periodic command alongside the position poll.
+     *  Null when there's no connection or the mount didn't answer. */
     suspend fun readTrackingEnabled(): Boolean?
 }

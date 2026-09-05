@@ -17,19 +17,21 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.NavigateBefore
 import androidx.compose.material.icons.automirrored.filled.NavigateNext
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Gamepad
 import androidx.compose.material.icons.filled.GpsFixed
+import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.SettingsInputAntenna
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.Button
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.SnackbarHost
-import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
@@ -57,13 +59,14 @@ import com.astrocompass.catalog.SkyObject
 import com.astrocompass.catalog.searchDisplayLabel
 import com.astrocompass.guiding.AbsoluteReferenceState
 import com.astrocompass.guiding.GuidanceCalculator
-import com.astrocompass.guiding.PointingOrigin
 import com.astrocompass.guiding.ReferenceOrigin
 import com.astrocompass.guiding.SkyPointingSource
 import com.astrocompass.guiding.currentHorizontal
 import com.astrocompass.location.ObserverLocation
+import com.astrocompass.telescope.MoveRatePreset
 import com.astrocompass.telescope.SlewOutcome
 import com.astrocompass.telescope.SlewRatePreset
+import com.astrocompass.telescope.TelescopeDirection
 import com.astrocompass.ui.components.AppBottomBar
 import com.astrocompass.ui.components.AppMenuActions
 import com.astrocompass.ui.components.DeltaBar
@@ -75,14 +78,15 @@ import com.astrocompass.ui.components.mapOverlayScrim
 import com.astrocompass.ui.components.SkyMap
 import com.astrocompass.ui.components.SkyMapGuidancePath
 import com.astrocompass.ui.components.SkyMapMarker
-import com.astrocompass.ui.components.TelescopeOptionsSheet
+import com.astrocompass.ui.components.TelescopeControlPad
+import com.astrocompass.ui.components.TelescopeSheet
 import com.astrocompass.ui.components.ToolbarActionButton
 import com.astrocompass.ui.components.rememberSkyMapSnapshot
 import com.astrocompass.ui.skymap.SkyMapViewport
 import com.astrocompass.ui.theme.GuidancePathAmber
 import com.astrocompass.ui.theme.OnTargetGreen
-import com.astrocompass.ui.theme.TelescopeBlue
 import com.astrocompass.ui.theme.WarningAmber
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
@@ -104,8 +108,9 @@ fun GuidanceScreen(
     onSelectTarget: (SkyObject) -> Unit,
     pointingSource: SkyPointingSource,
     /** Marked in blue while a connected mount is reporting -- see
-     *  [com.astrocompass.AppContainer.telescopeSkyDirection]. In Telescope mode this is the same
-     *  direction [pointingSource] serves, and the map draws one marker for both. */
+     *  [com.astrocompass.AppContainer.telescopeSkyDirection]. Entirely separate from
+     *  [pointingSource], which always serves the phone's own pointing: this is only ever shown as
+     *  its own marker, alongside it, never in place of it. */
     telescopeDirection: Vector3?,
     absoluteReference: StateFlow<AbsoluteReferenceState?>,
     location: ObserverLocation,
@@ -117,11 +122,18 @@ fun GuidanceScreen(
     menu: AppMenuActions,
     onOpenSearch: () -> Unit,
     onExitGuiding: () -> Unit,
-    // Only ever called while pointingSource.origin is TELESCOPE (see the bottom toolbar) -- a
-    // connected mount's own reported position is what "on target" means here, same target the
-    // arrow already guides toward.
+    // Reached from the Telescope button's bottom sheet, not gated on the phone's own pointing
+    // state at all -- a connected mount's GOTO needs no phone alignment, only its own connection.
     onGoto: suspend () -> SlewOutcome,
     onAbortSlew: suspend () -> Unit,
+    onMoveHome: suspend () -> Unit,
+    onDisconnectTelescope: suspend () -> Unit,
+    /** Hand-controller motion for the floating "Manual controls" sheet -- press/release and the
+     *  rate it moves at. [onStopAllMotion] is deliberately not suspending; see [TelescopeControlPad]. */
+    onPressDirection: suspend (TelescopeDirection) -> Unit,
+    onReleaseDirection: suspend (TelescopeDirection) -> Unit,
+    onMoveRateChange: suspend (MoveRatePreset) -> Unit,
+    onStopAllMotion: () -> Unit,
     slewRatePreset: SlewRatePreset,
     onSlewRatePresetChange: suspend (SlewRatePreset) -> Unit,
     onReadTracking: suspend () -> Boolean?,
@@ -131,7 +143,8 @@ fun GuidanceScreen(
     mapObjectFilter: MapObjectFilter,
     onMapObjectFilterChange: (MapObjectFilter) -> Unit,
     // Night Wizard mode: non-null wizardProgress swaps the header/toolbar to walk through a fixed
-    // object list instead of the single-target Search/Exit (or GOTO/Abort/Options) layout. `first` is the 1-based current index, `second` the total count.
+    // object list instead of the single-target Search/Telescope/Exit layout. `first` is the
+    // 1-based current index, `second` the total count.
     wizardProgress: Pair<Int, Int>? = null,
     onNextObject: () -> Unit = {},
     onPreviousObject: () -> Unit = {},
@@ -143,12 +156,9 @@ fun GuidanceScreen(
     onBackToObjectList: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
-    val pointingReady by pointingSource.isReady.collectAsState()
     val currentPointing by pointingSource.currentSkyDirection.collectAsState()
-    val pointingOrigin by pointingSource.origin.collectAsState()
     val reference by absoluteReference.collectAsState()
     val scope = rememberCoroutineScope()
-    val snackbarHostState = remember { SnackbarHostState() }
 
     var now by remember { mutableStateOf(currentEpochMillis()) }
     LaunchedEffect(Unit) {
@@ -176,10 +186,17 @@ fun GuidanceScreen(
     )
 
     // Tracks a commanded GOTO that hasn't yet landed -- blocks picking a new target off the map
-    // mid-slew (see onSelectTarget's doc). Cleared by Abort or once the arrow reports on-target,
-    // the same signal the haptic below already keys off; keyed on target's identity so switching
-    // targets (including the wizard's Prev/Next) starts each one clean.
+    // mid-slew (see onSelectTarget's doc). Cleared by Abort or once the mount's own reported
+    // position lands on the target (see telescopeOnTarget below) -- deliberately not the phone's
+    // own guidance.isOnTarget, which the phone may never report at all if it's held separately from
+    // the telescope rather than mounted on it. Keyed on target's identity so switching targets
+    // (including the wizard's Prev/Next) starts each one clean.
     var telescopeSlewing by remember(target) { mutableStateOf(false) }
+    val targetDirection = target.currentHorizontal(location, now).toEnu()
+    val telescopeOnTarget = telescopeDirection?.let { it.angleTo(targetDirection).degrees <= onTargetToleranceDegrees } ?: false
+    LaunchedEffect(telescopeOnTarget) {
+        if (telescopeOnTarget) telescopeSlewing = false
+    }
     var mapViewport by remember { mutableStateOf(SkyMapViewport.DEFAULT) }
     var followPointing by remember { mutableStateOf(true) }
     // Deriving this directly during composition, rather than centering mapViewport itself via a
@@ -196,33 +213,68 @@ fun GuidanceScreen(
         mapViewport
     }
 
-    // Tracking is read from the mount each time the options sheet opens rather than polled --
-    // nothing else in the app reacts to it, so a second periodic command alongside the position
-    // poll would buy nothing. Null means "not answered yet", which is what the sheet renders as a
-    // spinner instead of an assumed state.
+    // Tracking is read from the mount each time the sheet opens rather than polled -- nothing else
+    // in the app reacts to it, so a second periodic command alongside the position poll would buy
+    // nothing. Null means "not answered yet", which is what the sheet renders as a spinner instead
+    // of an assumed state.
     var showFilterSheet by remember { mutableStateOf(false) }
-    var showTelescopeOptions by remember { mutableStateOf(false) }
+    var showTelescopeSheet by remember { mutableStateOf(false) }
     var trackingEnabled by remember { mutableStateOf<Boolean?>(null) }
     var trackingError by remember { mutableStateOf<String?>(null) }
-    LaunchedEffect(showTelescopeOptions) {
-        if (!showTelescopeOptions) return@LaunchedEffect
+    var slewError by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(showTelescopeSheet) {
+        if (!showTelescopeSheet) return@LaunchedEffect
         trackingEnabled = null
         trackingError = null
+        slewError = null
         trackingEnabled = onReadTracking()
     }
 
-    // Hoisted above the Scaffold since both the content (the not-ready gate) and the bottom
-    // toolbar (which hides its actions until there's something to act on) need it. A connected
-    // telescope's own reported position is a complete answer with no phone alignment involved --
-    // see PointingOrigin's doc -- so only the PHONE_SENSORS branch needs a star/compass reference
-    // at all; pointingReady already covers telescope readiness (see TelescopePointingSource).
+    // Shared by the Telescope sheet's own Goto/Abort row and the floating action row over the map,
+    // so the two doors into the same command behave identically rather than each carrying its own
+    // copy of the SlewOutcome handling.
+    val performGoto: () -> Unit = {
+        telescopeSlewing = true
+        slewError = null
+        scope.launch {
+            when (val outcome = onGoto()) {
+                is SlewOutcome.Rejected -> {
+                    telescopeSlewing = false
+                    slewError = outcome.reason
+                }
+                SlewOutcome.NoConnection -> {
+                    telescopeSlewing = false
+                    slewError = "Telescope not connected"
+                }
+                SlewOutcome.Started -> {}
+            }
+        }
+    }
+    val performAbort: () -> Unit = {
+        scope.launch { onAbortSlew() }
+        telescopeSlewing = false
+    }
+
+    // The floating "Manual controls" sheet's own state -- mirrors StarAlignmentStep's Controls
+    // overlay (see [TelescopeControlPad]), the code this reuses.
+    var showTelescopeControls by remember { mutableStateOf(false) }
+    var moveRate by remember { mutableStateOf(MoveRatePreset.DEFAULT) }
+    val pressJobs = remember { mutableMapOf<TelescopeDirection, Job>() }
+    // Sent when the sheet opens as well as when the rate is picked: the rate lives on the mount,
+    // and the pad's own default has never been sent to it, so opening without this would move at
+    // whatever the mount was last set to while the label claimed otherwise.
+    LaunchedEffect(showTelescopeControls, moveRate) {
+        if (showTelescopeControls) onMoveRateChange(moveRate)
+    }
+
+    // pointingSource always serves the phone's own sensors now -- a connected mount's own reported
+    // position is shown separately (telescopeDirection) and never substitutes for this. So there's
+    // exactly one reason the not-ready wall shows: no star/compass reference yet.
     val activeReference = reference
-    val phoneNeedsAlignment = pointingOrigin == PointingOrigin.PHONE_SENSORS && activeReference == null
-    val showGuidanceActions = pointingReady && currentPointing != null && !phoneNeedsAlignment
+    val phoneNeedsAlignment = activeReference == null
 
     Scaffold(
         modifier = modifier,
-        snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
             TopAppBar(
                 title = { Text(target.searchDisplayLabel()) },
@@ -276,47 +328,19 @@ fun GuidanceScreen(
                         ToolbarCancelButton(onExitGuiding)
                     } else {
                         ToolbarActionButton(icon = Icons.Default.Search, label = "Search", onClick = onOpenSearch)
-                        // Nothing here corrects the phone's own alignment: a camera setup
-                        // re-anchors itself in the background (see onAutoPlateSolveActive) and a
-                        // sensors-only one is re-aligned through the wizard, in the menu.
-                        if (showGuidanceActions) {
-                            when (pointingOrigin) {
-                                PointingOrigin.TELESCOPE -> {
-                                    ToolbarActionButton(
-                                        icon = Icons.Default.GpsFixed,
-                                        label = "GOTO",
-                                        onClick = {
-                                            telescopeSlewing = true
-                                            scope.launch {
-                                                when (val outcome = onGoto()) {
-                                                    is SlewOutcome.Rejected -> {
-                                                        telescopeSlewing = false
-                                                        snackbarHostState.showSnackbar(outcome.reason)
-                                                    }
-                                                    SlewOutcome.NoConnection -> {
-                                                        telescopeSlewing = false
-                                                        snackbarHostState.showSnackbar("Telescope not connected")
-                                                    }
-                                                    SlewOutcome.Started -> {}
-                                                }
-                                            }
-                                        },
-                                    )
-                                    ToolbarActionButton(
-                                        icon = Icons.Default.Stop,
-                                        label = "Abort",
-                                        onClick = { scope.launch { onAbortSlew() }; telescopeSlewing = false },
-                                    )
-                                    ToolbarActionButton(
-                                        icon = Icons.Default.Tune,
-                                        label = "Options",
-                                        onClick = { showTelescopeOptions = true },
-                                    )
-                                }
-
-                                PointingOrigin.PHONE_SENSORS -> Unit
-                            }
-                        }
+                        // Independent of the phone's own alignment state -- a connected mount's
+                        // GOTO needs no phone reference at all, so this is reachable even from the
+                        // "Not calibrated" wall below. Nothing here corrects the phone's own
+                        // alignment either way: a camera setup re-anchors itself in the background
+                        // (see onAutoPlateSolveActive) and a sensors-only one is re-aligned through
+                        // the wizard, in the menu.
+                        ToolbarActionButton(
+                            icon = Icons.Default.SettingsInputAntenna,
+                            label = "Telescope",
+                            onClick = { showTelescopeSheet = true },
+                            containerColor = if (menu.isTelescopeConnected) MaterialTheme.colorScheme.primaryContainer else null,
+                            contentColor = if (menu.isTelescopeConnected) MaterialTheme.colorScheme.onPrimaryContainer else LocalContentColor.current,
+                        )
                         ToolbarCancelButton(onExitGuiding)
                     }
                 }
@@ -324,19 +348,17 @@ fun GuidanceScreen(
         },
     ) { padding ->
         if (currentPointing == null || phoneNeedsAlignment) {
-            NotReadyContent(pointingOrigin, menu.onOpenAlignment, Modifier.padding(padding))
+            NotReadyContent(menu.onOpenAlignment, Modifier.padding(padding))
             return@Scaffold
         }
 
-        val targetDirection = target.currentHorizontal(location, now).toEnu()
         val guidance = GuidanceCalculator.compute(currentPointing!!, targetDirection, onTargetToleranceDegrees)
 
         val haptic = LocalHapticFeedback.current
         var wasOnTarget by remember { mutableStateOf(false) }
         LaunchedEffect(guidance.isOnTarget) {
-            if (guidance.isOnTarget) {
-                if (!wasOnTarget) haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                telescopeSlewing = false
+            if (guidance.isOnTarget && !wasOnTarget) {
+                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
             }
             wasOnTarget = guidance.isOnTarget
         }
@@ -356,9 +378,6 @@ fun GuidanceScreen(
                 northOffsetDirections = snapshot.northOffsetDirections,
                 showObjectPhotos = showObjectPhotos,
                 dimBelowHorizon = dimBelowHorizon,
-                // In Telescope mode the current-pointing marker already sits exactly where the
-                // mount reports, so it takes the blue itself rather than a second marker being
-                // stacked on the same spot -- on-target green still wins over both.
                 guidancePath = SkyMapGuidancePath(
                     start = currentPointing!!,
                     end = targetDirection,
@@ -368,19 +387,11 @@ fun GuidanceScreen(
                     SkyMapMarker(direction = targetDirection, color = MaterialTheme.colorScheme.primary, label = target.displayName),
                     SkyMapMarker(
                         direction = currentPointing!!,
-                        color = when {
-                            guidance.isOnTarget -> OnTargetGreen
-                            pointingOrigin == PointingOrigin.TELESCOPE -> TelescopeBlue
-                            else -> MaterialTheme.colorScheme.secondary
-                        },
-                        // In Telescope mode this marker *is* the telescope's own position (see the
-                        // dedup above), not the phone's -- see the same labeling in MapScreen.
-                        label = if (pointingOrigin == PointingOrigin.TELESCOPE) "Telescope" else "Phone",
+                        color = if (guidance.isOnTarget) OnTargetGreen else MaterialTheme.colorScheme.secondary,
+                        label = "Phone",
                         labelAbove = true,
                     ),
-                    telescopeDirection
-                        ?.takeIf { pointingOrigin != PointingOrigin.TELESCOPE }
-                        ?.let(SkyMapMarker::telescope),
+                    telescopeDirection?.let(SkyMapMarker::telescope),
                 ),
                 onSelect = if (wizardProgress == null && !telescopeSlewing) onSelectTarget else null,
                 modifier = Modifier.fillMaxSize(),
@@ -395,7 +406,6 @@ fun GuidanceScreen(
             )
 
             ReferenceStatusSection(
-                pointingOrigin = pointingOrigin,
                 reference = activeReference,
                 modifier = Modifier.align(Alignment.TopStart)
                     .padding(8.dp)
@@ -410,6 +420,16 @@ fun GuidanceScreen(
                 horizontalAlignment = Alignment.CenterHorizontally,
                 modifier = Modifier.align(Alignment.BottomCenter).fillMaxWidth(),
             ) {
+                if (menu.isTelescopeConnected) {
+                    TelescopeActionRow(
+                        isSlewing = telescopeSlewing,
+                        onGoto = performGoto,
+                        onAbort = performAbort,
+                        onOpenControls = { showTelescopeControls = true },
+                        onMoveHome = { scope.launch { onMoveHome() } },
+                        modifier = Modifier.padding(bottom = 8.dp),
+                    )
+                }
                 Column(
                     horizontalAlignment = Alignment.CenterHorizontally,
                     modifier = Modifier.padding(bottom = 8.dp)
@@ -445,8 +465,15 @@ fun GuidanceScreen(
         )
     }
 
-    if (showTelescopeOptions) {
-        TelescopeOptionsSheet(
+    if (showTelescopeSheet) {
+        TelescopeSheet(
+            isConnected = menu.isTelescopeConnected,
+            onConnect = { showTelescopeSheet = false; menu.onOpenTelescope() },
+            onGoto = performGoto,
+            onAbortSlew = performAbort,
+            slewError = slewError,
+            onMoveHome = { scope.launch { onMoveHome() } },
+            onDisconnect = { scope.launch { onDisconnectTelescope() } },
             slewRatePreset = slewRatePreset,
             onSlewRatePresetChange = { preset -> scope.launch { onSlewRatePresetChange(preset) } },
             trackingEnabled = trackingEnabled,
@@ -465,33 +492,74 @@ fun GuidanceScreen(
                 }
             },
             trackingError = trackingError,
-            onDismiss = { showTelescopeOptions = false },
+            onDismiss = { showTelescopeSheet = false },
         )
     }
-}
 
-/** How the current pointing solution was obtained. [reference] describes the *phone's* alignment
- *  and is only consulted under [PointingOrigin.PHONE_SENSORS] -- a connected mount needs none of
- *  that, see [PointingOrigin]'s doc. Renders nothing once a real fit is in effect: only the compass
- *  fallback warrants a permanent overlay saying the whole solution is provisional. */
-@Composable
-private fun ReferenceStatusSection(
-    pointingOrigin: PointingOrigin,
-    reference: AbsoluteReferenceState?,
-    modifier: Modifier = Modifier,
-) {
-    when (pointingOrigin) {
-        PointingOrigin.TELESCOPE -> Column(modifier.fillMaxWidth()) { TelescopeStatusText() }
-        PointingOrigin.PHONE_SENSORS -> when (reference?.origin) {
-            ReferenceOrigin.STAR_ALIGNMENT -> {}
-            ReferenceOrigin.COMPASS, null -> Column(modifier.fillMaxWidth()) { CompassModeText() }
+    if (showTelescopeControls) {
+        ModalBottomSheet(onDismissRequest = { showTelescopeControls = false }) {
+            Box(Modifier.fillMaxWidth().padding(24.dp), contentAlignment = Alignment.Center) {
+                TelescopeControlPad(
+                    moveRate = moveRate,
+                    onMoveRateChange = { moveRate = it },
+                    onPressDirection = { direction ->
+                        pressJobs[direction] = scope.launch { onPressDirection(direction) }
+                    },
+                    onReleaseDirection = { direction ->
+                        scope.launch {
+                            pressJobs.remove(direction)?.join()
+                            onReleaseDirection(direction)
+                        }
+                    },
+                    onStopAllMotion = onStopAllMotion,
+                )
+            }
         }
     }
 }
 
+/** The floating telescope control cluster, styled like [MapFollowZoomControls] but horizontal --
+ *  shown above the separation readout only while a mount is connected. [isSlewing] toggles the
+ *  first icon between Goto and Abort (a play/stop pair) rather than showing both permanently,
+ *  since the two are never both valid at once; it's the same locally-tracked "is a commanded GOTO
+ *  still in flight" state the toolbar's Telescope sheet uses; see `telescopeSlewing`'s own doc for
+ *  why that's the mount's own reported position and not the phone's guidance. */
 @Composable
-private fun TelescopeStatusText() {
-    Text("Telescope connected", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodyMedium)
+private fun TelescopeActionRow(
+    isSlewing: Boolean,
+    onGoto: () -> Unit,
+    onAbort: () -> Unit,
+    onOpenControls: () -> Unit,
+    onMoveHome: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Row(modifier.mapOverlayScrim().padding(4.dp)) {
+        IconButton(onClick = if (isSlewing) onAbort else onGoto) {
+            Icon(
+                if (isSlewing) Icons.Default.Stop else Icons.Default.GpsFixed,
+                contentDescription = if (isSlewing) "Abort slew" else "Goto",
+            )
+        }
+        IconButton(onClick = onOpenControls) {
+            Icon(Icons.Default.Gamepad, contentDescription = "Manual controls")
+        }
+        IconButton(onClick = onMoveHome) {
+            Icon(Icons.Default.Home, contentDescription = "Send telescope home")
+        }
+    }
+}
+
+/** How the phone's own alignment was obtained. Renders nothing once a real fit is in effect: only
+ *  the compass fallback warrants a permanent overlay saying the whole solution is provisional. */
+@Composable
+private fun ReferenceStatusSection(
+    reference: AbsoluteReferenceState?,
+    modifier: Modifier = Modifier,
+) {
+    when (reference?.origin) {
+        ReferenceOrigin.STAR_ALIGNMENT -> {}
+        ReferenceOrigin.COMPASS, null -> Column(modifier.fillMaxWidth()) { CompassModeText() }
+    }
 }
 
 /** No error figure quoted: the compass fallback's yaw error varies wildly with how much steel is
@@ -509,33 +577,21 @@ private fun CompassModeText() {
     }
 }
 
-/** [PointingOrigin.TELESCOPE] reaches this only in the brief window between connecting and the
- *  first polled position report -- no action needed there, it resolves itself, unlike
- *  [PointingOrigin.PHONE_SENSORS] genuinely needing the user to align. */
 @Composable
-private fun NotReadyContent(pointingOrigin: PointingOrigin, onOpenAlignment: () -> Unit, modifier: Modifier = Modifier) {
+private fun NotReadyContent(onOpenAlignment: () -> Unit, modifier: Modifier = Modifier) {
     Column(
         modifier.fillMaxSize().padding(32.dp),
         verticalArrangement = Arrangement.Center,
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        when (pointingOrigin) {
-            PointingOrigin.TELESCOPE -> {
-                Text("Waiting for telescope position...", style = MaterialTheme.typography.titleLarge)
-                CircularProgressIndicator(Modifier.padding(top = 24.dp))
-            }
-
-            PointingOrigin.PHONE_SENSORS -> {
-                Text("Not calibrated", style = MaterialTheme.typography.titleLarge)
-                Text(
-                    "Calibrate the phone before it can point you toward anything.",
-                    style = MaterialTheme.typography.bodyMedium,
-                    modifier = Modifier.padding(top = 8.dp, bottom = 24.dp),
-                )
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
-                    Button(onClick = onOpenAlignment) { Text("Calibrate now") }
-                }
-            }
+        Text("Not calibrated", style = MaterialTheme.typography.titleLarge)
+        Text(
+            "Calibrate the phone before it can point you toward anything.",
+            style = MaterialTheme.typography.bodyMedium,
+            modifier = Modifier.padding(top = 8.dp, bottom = 24.dp),
+        )
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
+            Button(onClick = onOpenAlignment) { Text("Calibrate now") }
         }
     }
 }

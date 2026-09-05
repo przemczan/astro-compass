@@ -93,7 +93,6 @@ fun GuiderApp(container: AppContainer, onExitApp: () -> Unit = {}) {
         val isStarAligned = absoluteReferenceState?.origin == ReferenceOrigin.STAR_ALIGNMENT
         val telescopeConnectionState by container.telescopeConnection.state.collectAsState()
         val isTelescopeConnected = telescopeConnectionState is TelescopeConnectionState.Connected
-        val guidingMode by container.guidingMode.collectAsState()
         val telescopeDirection by container.telescopeSkyDirection.collectAsState()
         val slewRatePreset by container.preferences.slewRatePreset.collectAsState()
         val selectedCameraId by container.preferences.selectedCameraId.collectAsState()
@@ -206,7 +205,6 @@ fun GuiderApp(container: AppContainer, onExitApp: () -> Unit = {}) {
                     container.saveAlignment(model)
                     container.preferences.setAlignmentCompleted(AlignmentType.SENSORS_ONLY, currentEpochMillis())
                 },
-                guidingMode = guidingMode,
                 selectedCameraId = selectedCameraId,
                 selectedPhysicalCameraId = selectedPhysicalCameraId,
                 telescopeBoresight = telescopeBoresight,
@@ -342,7 +340,7 @@ fun GuiderApp(container: AppContainer, onExitApp: () -> Unit = {}) {
                         selectedTarget = newTarget
                         container.preferences.setLastTargetId(newTarget.id)
                     },
-                    pointingSource = container.activePointingSource,
+                    pointingSource = container.pointingService,
                     telescopeDirection = telescopeDirection,
                     absoluteReference = container.absoluteReference.current,
                     location = location,
@@ -354,6 +352,12 @@ fun GuiderApp(container: AppContainer, onExitApp: () -> Unit = {}) {
                     onExitGuiding = { if (wizardObjects != null) cancelWizard() else isGuiding = false },
                     onGoto = { container.slewTelescopeTo(target, currentEpochMillis()) },
                     onAbortSlew = { container.abortTelescopeSlew() },
+                    onMoveHome = { container.moveTelescopeHome() },
+                    onDisconnectTelescope = { container.disconnectTelescope() },
+                    onPressDirection = { direction -> container.startTelescopeMove(direction) },
+                    onReleaseDirection = { direction -> container.stopTelescopeMove(direction) },
+                    onMoveRateChange = { preset -> container.setTelescopeMoveRatePreset(preset) },
+                    onStopAllMotion = { container.stopAllTelescopeMotion() },
                     slewRatePreset = slewRatePreset,
                     onSlewRatePresetChange = { container.setSlewRatePreset(it) },
                     onReadTracking = { container.readTelescopeTracking() },
@@ -388,7 +392,7 @@ fun GuiderApp(container: AppContainer, onExitApp: () -> Unit = {}) {
             else -> MapScreen(
                 catalogRepository = container.catalogRepository,
                 location = location,
-                pointingSource = container.activePointingSource,
+                pointingSource = container.pointingService,
                 telescopeDirection = telescopeDirection,
                 menu = menuActions,
                 selectedTarget = selectedTarget,

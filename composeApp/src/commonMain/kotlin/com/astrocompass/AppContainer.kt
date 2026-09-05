@@ -23,12 +23,9 @@ import com.astrocompass.guiding.AlignmentAbsoluteReference
 import com.astrocompass.guiding.AutoPlateSolveRefiner
 import com.astrocompass.guiding.CompassAbsoluteReference
 import com.astrocompass.guiding.FreshestAbsoluteReference
-import com.astrocompass.guiding.GuidingMode
 import com.astrocompass.guiding.PlateSolveAttempt
 import com.astrocompass.guiding.PointingService
 import com.astrocompass.guiding.PrioritizedAbsoluteReference
-import com.astrocompass.guiding.SelectablePointingSource
-import com.astrocompass.guiding.SkyPointingSource
 import com.astrocompass.guiding.currentEquatorial
 import com.astrocompass.guiding.currentHorizontal
 import com.astrocompass.location.LocationProvider
@@ -149,55 +146,19 @@ class AppContainer(
     private val telescopePointingSource = TelescopePointingSource(scope, telescopeConnection, locationResolver.resolved)
 
     /** Where the mount reports itself pointing, or null while there is no connected mount reporting
-     *  freshly -- every sky map marks this (see [com.astrocompass.ui.components.SkyMapMarker.telescope]),
-     *  independent of [guidingMode]: seeing where the telescope actually points is useful even
-     *  while guidance itself follows the phone. Gated on [TelescopePointingSource.isReady] rather
-     *  than a plain null check on the direction, so a dropped connection clears the marker instead
-     *  of leaving the last report as a ghost. */
+     *  freshly -- every sky map marks this (see [com.astrocompass.ui.components.SkyMapMarker.telescope]).
+     *  Gated on [TelescopePointingSource.isReady] rather than a plain null check on the direction,
+     *  so a dropped connection clears the marker instead of leaving the last report as a ghost. */
     val telescopeSkyDirection: StateFlow<Vector3?> =
         combine(telescopePointingSource.currentSkyDirection, telescopePointingSource.isReady) { direction, isReady ->
             direction.takeIf { isReady }
         }.stateIn(scope, SharingStarted.Eagerly, null)
 
-    /** Which instrument the user wants driving pointing. [GuidingMode.PHONE] until something calls
-     *  [setGuidingMode] -- the app is phone-only while the mode picker is hidden (see
-     *  `AppBottomBar`'s `SHOW_TELESCOPE_ENTRIES`), and a connected mount must not silently take
-     *  over guidance with no visible control to hand it back. */
-    private val selectedGuidingMode = MutableStateFlow(GuidingMode.PHONE)
-
-    /** [selectedGuidingMode] resolved against the live connection: [GuidingMode.TELESCOPE] is
-     *  meaningless without a mount, so it degrades to [GuidingMode.PHONE] whenever one isn't
-     *  connected.
-     *
-     *  Derived rather than written back on connect/disconnect. A collector would have to catch the
-     *  drop case too -- which surfaces as [TelescopeConnectionState.Failed], not `Disconnected`
-     *  (see [Lx200TelescopeConnection.watchForDrop]) -- or strand guidance waiting forever on a
-     *  mount that's gone, and it would also overwrite a deliberate Manual choice on every
-     *  reconnect. Deriving it does both correctly for free. */
-    val guidingMode: StateFlow<GuidingMode> =
-        combine(selectedGuidingMode, telescopeConnection.state) { mode, connectionState ->
-            if (connectionState is TelescopeConnectionState.Connected) mode else GuidingMode.PHONE
-        }.stateIn(scope, SharingStarted.Eagerly, GuidingMode.PHONE)
-
-    /** Whatever [guidingMode] currently names -- what
-     *  [MapScreen][com.astrocompass.ui.screens.MapScreen] and
-     *  [GuidanceScreen][com.astrocompass.ui.screens.GuidanceScreen] consume instead of
-     *  [pointingService] directly. [pointingService] itself stays the seed for [attemptPlateSolve]
-     *  regardless -- plate solving is a phone-camera feature and always corrects the phone's own
-     *  alignment, never the mount's. */
-    val activePointingSource: SkyPointingSource =
-        SelectablePointingSource(scope, guidingMode, telescope = telescopePointingSource, phone = pointingService)
-
-    fun setGuidingMode(mode: GuidingMode) {
-        selectedGuidingMode.value = mode
-    }
-
-    /** Turns the background solve loop on while the Guidance screen is showing a plate-solve setup
-     *  under phone guidance, and off otherwise -- there is nothing for it to correct while a mount
-     *  supplies pointing, and no reason to keep opening the camera outside guidance. */
+    /** Turns the background solve loop on while the Guidance screen is showing a plate-solve setup,
+     *  and off otherwise -- there is nothing for it to correct outside guidance. */
     fun setAutoPlateSolveActive(active: Boolean) {
         val plateSolveSetup = preferences.alignmentType.value == AlignmentType.PLATE_SOLVE
-        autoPlateSolveRefiner.setActive(active && plateSolveSetup && guidingMode.value == GuidingMode.PHONE)
+        autoPlateSolveRefiner.setActive(active && plateSolveSetup)
     }
 
     init {

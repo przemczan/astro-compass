@@ -108,15 +108,16 @@ private enum class StarSortMode(val label: String) { MAGNITUDE("Magnitude"), NAM
  * pending simply replaces the pick. The map only ever *picks* a star while a pick could actually go
  * somewhere; otherwise it is an overview and nothing more.
  *
- * [guidingMode] chooses **which instrument the run aligns, never both**:
- *
- * - [GuidingMode.PHONE] fits the phone's own [AlignmentModel] from sensor readings, via
- *   [onCapturePoint] and [AlignmentSolver]. The mount is not touched.
- * - [GuidingMode.TELESCOPE] drives OnStep's own stateful alignment on the mount --
- *   [onBeginMountAlignment] arms it, each confirm feeds it one star through [onSyncTelescope], and
- *   [onSaveMountAlignmentModel] persists the result. No sensor reading is captured and no phone
- *   model is written: with the phone in the user's hand rather than on the telescope, a sensor
- *   direction taken at confirm time describes nothing.
+ * [AlignmentSession.mode] chooses **which instrument the run aligns, never both** -- [GuidingMode.PHONE]
+ * fits the phone's own [AlignmentModel] from sensor readings, via [onCapturePoint] and
+ * [AlignmentSolver], never touching the mount. [GuidingMode.TELESCOPE] instead drives OnStep's own
+ * stateful alignment on the mount ([onBeginMountAlignment] arms it, each confirm feeds it one star
+ * through [onSyncTelescope], [onSaveMountAlignmentModel] persists the result -- no sensor reading
+ * is captured and no phone model is written, since a sensor direction taken at confirm time with
+ * the phone in the user's hand rather than on the telescope describes nothing) -- but nothing calls
+ * [AlignmentSession.switchTo] today, so that branch throughout this step is currently unreachable.
+ * A dedicated telescope alignment wizard is planned separately to pick it, rather than reviving
+ * this path through the phone wizard's own Star Sync step.
  *
  * The run itself lives in [session], outside this composable, because the menu's Settings entry
  * tears the screen down -- and because re-arming a mount mid-run re-homes it.
@@ -137,7 +138,6 @@ fun StarAlignmentStep(
     onMapObjectFilterChange: (MapObjectFilter) -> Unit,
     onCapturePoint: (target: SkyObject, source: AlignmentSource, nowEpochMillis: Long) -> AlignmentPoint?,
     onSaveModel: (AlignmentModel) -> Unit,
-    guidingMode: GuidingMode,
     /** Slews a connected mount to the pending star, so the user only has to correct the last
      *  degree or so by hand instead of finding it from scratch. */
     onGoto: suspend (target: SkyObject) -> SlewOutcome,
@@ -174,12 +174,10 @@ fun StarAlignmentStep(
     val scope = rememberCoroutineScope()
     val snackbarHostState = remember { SnackbarHostState() }
 
-    val alignsMount = guidingMode == GuidingMode.TELESCOPE
-    // Idempotent, so returning from Settings doesn't wipe the run -- see AlignmentSession.switchTo.
-    LaunchedEffect(guidingMode) {
-        session.switchTo(guidingMode)
-        pendingTarget = null
-    }
+    // Always false today -- see AlignmentSession.mode's doc: nothing calls switchTo(TELESCOPE),
+    // so this branch throughout the step is currently unreachable pending a dedicated telescope
+    // alignment wizard.
+    val alignsMount = session.mode == GuidingMode.TELESCOPE
 
     // Asking to start over. Deliberately screen-local rather than part of the session: losing it
     // (a trip through Settings) falls back to the run the mount is actually in the middle of, which

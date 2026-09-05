@@ -14,7 +14,6 @@ import androidx.compose.material.icons.filled.Explore
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.SettingsInputAntenna
-import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.material3.BottomAppBar
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -33,12 +32,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.dp
 
-/** The phone/telescope mode picker is hidden behind this gate rather than deleted, so
- *  [com.astrocompass.guiding.GuidingMode.TELESCOPE] stays wired but unreachable and one flip brings
- *  the whole path back -- mount connection itself ([SHOW_TELESCOPE_ENTRIES]) no longer needs the
- *  same gate, since connecting to a mount and setting up its alignment is useful on its own even
- *  while guiding stays phone-driven. */
-private const val SHOW_MODE_MENU_ITEM = false
+/** Connecting to a mount and setting up its alignment is useful on its own even while guiding
+ *  stays phone-driven, so this entry is never gated on a live connection. */
 private const val SHOW_TELESCOPE_ENTRIES = true
 
 /** The app-wide destinations every bottom bar's menu offers, passed down from `App.kt` so no screen
@@ -130,9 +125,6 @@ private fun AppMenuButton(menu: AppMenuActions) {
                     supportingText = if (menu.isTelescopeConnected) "Connected" else null,
                     onClick = { expanded = false; menu.onOpenTelescope() },
                 )
-            }
-            if (SHOW_MODE_MENU_ITEM) {
-                AppMenuItem(icon = Icons.Default.SwapHoriz, label = "Mode", onClick = { expanded = false })
             }
         }
     }

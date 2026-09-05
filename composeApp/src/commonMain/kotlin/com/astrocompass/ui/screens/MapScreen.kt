@@ -41,7 +41,6 @@ import com.astrocompass.astro.time.currentEpochMillis
 import com.astrocompass.catalog.CatalogRepository
 import com.astrocompass.catalog.MapObjectFilter
 import com.astrocompass.catalog.SkyObject
-import com.astrocompass.guiding.PointingOrigin
 import com.astrocompass.guiding.SkyPointingSource
 import com.astrocompass.guiding.currentHorizontal
 import com.astrocompass.location.ObserverLocation
@@ -57,7 +56,6 @@ import com.astrocompass.ui.components.ToolbarActionButton
 import com.astrocompass.ui.components.mapOverlayScrim
 import com.astrocompass.ui.components.rememberSkyMapSnapshot
 import com.astrocompass.ui.skymap.SkyMapViewport
-import com.astrocompass.ui.theme.TelescopeBlue
 import com.astrocompass.ui.theme.WarningAmber
 import kotlinx.coroutines.launch
 
@@ -147,7 +145,6 @@ fun MapScreen(
         // pointing isn't the reason someone opened it. Same recenter-on-tick pattern as
         // GuidanceScreen's follow effect otherwise, just gated behind an opt-in toggle.
         val currentPointing by pointingSource.currentSkyDirection.collectAsState()
-        val pointingOrigin by pointingSource.origin.collectAsState()
         var followPointing by remember { mutableStateOf(false) }
         LaunchedEffect(currentPointing, followPointing) {
             val pointing = currentPointing
@@ -179,19 +176,12 @@ fun MapScreen(
                         currentPointing?.let { direction ->
                             SkyMapMarker(
                                 direction = direction,
-                                color = if (pointingOrigin == PointingOrigin.TELESCOPE) TelescopeBlue else MaterialTheme.colorScheme.secondary,
-                                // In Telescope mode this marker *is* the telescope's own position
-                                // (see the dedup below), not the phone's -- see the same labeling
-                                // in GuidanceScreen.
-                                label = if (pointingOrigin == PointingOrigin.TELESCOPE) "Telescope" else "Phone",
+                                color = MaterialTheme.colorScheme.secondary,
+                                label = "Phone",
                                 labelAbove = true,
                             )
                         },
-                        // In Telescope mode the current-pointing marker above already sits exactly
-                        // where the mount reports -- see the same dedup in GuidanceScreen.
-                        telescopeDirection
-                            ?.takeIf { pointingOrigin != PointingOrigin.TELESCOPE }
-                            ?.let(SkyMapMarker::telescope),
+                        telescopeDirection?.let(SkyMapMarker::telescope),
                     ),
                     onSelect = { obj -> onSelectTarget(obj) },
                     modifier = Modifier.fillMaxSize(),
