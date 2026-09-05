@@ -15,14 +15,18 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Explore
 import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.SettingsInputAntenna
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -45,19 +49,27 @@ import com.astrocompass.guiding.AlignmentStatus
 import com.astrocompass.guiding.SkyPointingSource
 import com.astrocompass.guiding.currentHorizontal
 import com.astrocompass.location.ObserverLocation
+import com.astrocompass.telescope.MountSyncStepResult
+import com.astrocompass.telescope.SlewOutcome
+import com.astrocompass.telescope.SlewRatePreset
+import com.astrocompass.telescope.TelescopeConnectionState
+import com.astrocompass.telescope.TelescopeReport
 import com.astrocompass.ui.BackHandler
 import com.astrocompass.ui.components.MAP_ZOOM_STEP_FACTOR
 import com.astrocompass.ui.components.AppBottomBar
 import com.astrocompass.ui.components.AppMenuActions
 import com.astrocompass.ui.components.MapFilterSheet
+import com.astrocompass.ui.components.MapFollowMode
 import com.astrocompass.ui.components.MapFollowZoomControls
 import com.astrocompass.ui.components.SkyMap
 import com.astrocompass.ui.components.SkyMapMarker
+import com.astrocompass.ui.components.TelescopeSheet
 import com.astrocompass.ui.components.ToolbarActionButton
 import com.astrocompass.ui.components.mapOverlayScrim
 import com.astrocompass.ui.components.rememberSkyMapSnapshot
 import com.astrocompass.ui.skymap.SkyMapViewport
 import com.astrocompass.ui.theme.WarningAmber
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 
 /** How long a second back press has to follow the first to actually exit, rather than just
@@ -96,9 +108,47 @@ fun MapScreen(
     onMapObjectFilterChange: (MapObjectFilter) -> Unit,
     onOpenSearch: () -> Unit,
     onExitApp: () -> Unit,
+    // Reached from the Telescope button's bottom sheet -- see TelescopeSheet's doc comment. Unlike
+    // Guidance, there's no fixed target here: onGotoTelescope takes whichever SkyObject the caller
+    // hands it (selectedTarget, when there is one), rather than closing over one fixed target the
+    // way Guidance's own onGoto does.
+    onGotoTelescope: suspend (SkyObject) -> SlewOutcome,
+    onAbortSlewTelescope: suspend () -> Unit,
+    onMoveHomeTelescope: suspend () -> Unit,
+    onDisconnectTelescope: suspend () -> Unit,
+    telescopeConnectionState: StateFlow<TelescopeConnectionState>,
+    telescopeReportedPosition: StateFlow<TelescopeReport?>,
+    telescopeMountSyncResults: StateFlow<List<MountSyncStepResult>>,
+    initialTelescopeTcpHost: String,
+    initialTelescopeTcpPort: Int,
+    onConnectTelescopeTcp: suspend (host: String, port: Int) -> Unit,
+    showTelescopeBluetoothSection: Boolean,
+    bondedTelescopeBluetoothDevices: () -> List<Pair<String, String>>,
+    onPairNewTelescopeBluetoothDevice: () -> Unit,
+    initialTelescopeBluetoothAddress: String?,
+    onConnectTelescopeBluetooth: suspend (address: String, name: String) -> Unit,
+    slewRatePreset: SlewRatePreset,
+    onSlewRatePresetChange: suspend (SlewRatePreset) -> Unit,
+    onReadTelescopeTracking: suspend () -> Boolean?,
+    onSetTelescopeTracking: suspend (Boolean) -> Boolean,
     modifier: Modifier = Modifier,
 ) {
     var showFilterSheet by remember { mutableStateOf(false) }
+    var showTelescopeSheet by remember { mutableStateOf(false) }
+    // Shared by both places the mount can be sent home from on this screen (today, just the
+    // Telescope sheet's own button, but keeping the same pattern GuidanceScreen uses) -- see that
+    // screen's own showHomeConfirmation for the full reasoning.
+    var showHomeConfirmation by remember { mutableStateOf(false) }
+    var trackingEnabled by remember { mutableStateOf<Boolean?>(null) }
+    var trackingError by remember { mutableStateOf<String?>(null) }
+    var slewError by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(showTelescopeSheet) {
+        if (!showTelescopeSheet) return@LaunchedEffect
+        trackingEnabled = null
+        trackingError = null
+        slewError = null
+        trackingEnabled = onReadTelescopeTracking()
+    }
 
     var lastBackPressEpochMillis by remember { mutableStateOf(0L) }
     val snackbarHostState = remember { SnackbarHostState() }
@@ -113,12 +163,36 @@ fun MapScreen(
         }
     }
 
+    // Targets whichever SkyObject is selected *at the moment of the tap*, not a fixed one -- unlike
+    // Guidance's performGoto, which always slews to that screen's one fixed target.
+    val performTelescopeGoto: () -> Unit = {
+        val target = selectedTarget
+        if (target != null) {
+            slewError = null
+            coroutineScope.launch {
+                when (val outcome = onGotoTelescope(target)) {
+                    is SlewOutcome.Rejected -> slewError = outcome.reason
+                    SlewOutcome.NoConnection -> slewError = "Telescope not connected"
+                    SlewOutcome.Started -> {}
+                }
+            }
+        }
+    }
+    val performTelescopeAbort: () -> Unit = { coroutineScope.launch { onAbortSlewTelescope() } }
+
     Scaffold(
         modifier = modifier,
         topBar = { TopAppBar(title = { Text("Find an object") }) },
         bottomBar = {
             AppBottomBar(menu) {
                 ToolbarActionButton(icon = Icons.Default.Search, label = "Search", onClick = onOpenSearch)
+                ToolbarActionButton(
+                    icon = Icons.Default.SettingsInputAntenna,
+                    label = "Telescope",
+                    onClick = { showTelescopeSheet = true },
+                    containerColor = if (menu.isTelescopeConnected) MaterialTheme.colorScheme.primaryContainer else null,
+                    contentColor = if (menu.isTelescopeConnected) MaterialTheme.colorScheme.onPrimaryContainer else LocalContentColor.current,
+                )
             }
         },
         snackbarHost = { SnackbarHost(snackbarHostState) },
@@ -143,15 +217,21 @@ fun MapScreen(
         )
         val now = snapshot.nowEpochMillis
 
-        // Off by default -- unlike Guidance, this is a browse map, so following the phone's
-        // pointing isn't the reason someone opened it. Same recenter-on-tick pattern as
-        // GuidanceScreen's follow effect otherwise, just gated behind an opt-in toggle.
+        // NONE by default -- unlike Guidance, this is a browse map, so following anything isn't
+        // the reason someone opened it. Same recenter-on-tick pattern as GuidanceScreen's follow
+        // effect otherwise, just gated behind an opt-in toggle -- and, unlike Guidance, offering
+        // TELESCOPE as a real destination (see MapFollowZoomControls' hasTelescope param below),
+        // since this screen's whole point is browsing the sky rather than a single fixed target.
         val currentPointing by pointingSource.currentSkyDirection.collectAsState()
-        var followPointing by remember { mutableStateOf(false) }
-        LaunchedEffect(currentPointing, followPointing) {
-            val pointing = currentPointing
-            if (followPointing && pointing != null) {
-                val horizontal = HorizontalCoordinates.fromEnu(pointing)
+        var followMode by remember { mutableStateOf(MapFollowMode.NONE) }
+        LaunchedEffect(currentPointing, telescopeDirection, followMode) {
+            val direction = when (followMode) {
+                MapFollowMode.PHONE -> currentPointing
+                MapFollowMode.TELESCOPE -> telescopeDirection
+                MapFollowMode.NONE -> null
+            }
+            if (direction != null) {
+                val horizontal = HorizontalCoordinates.fromEnu(direction)
                 onViewportChange(viewport.copy(centerAzimuth = horizontal.azimuth, centerAltitude = horizontal.altitude))
             }
         }
@@ -162,7 +242,7 @@ fun MapScreen(
                     directions = snapshot.directions,
                     viewport = viewport,
                     onViewportChange = onViewportChange,
-                    onManualInteraction = { followPointing = false },
+                    onManualInteraction = { followMode = MapFollowMode.NONE },
                     constellationLines = snapshot.constellationLines,
                     milkyWayCells = snapshot.milkyWayCells,
                     milkyWayGridStepDegrees = snapshot.milkyWayGridStepDegrees,
@@ -192,8 +272,9 @@ fun MapScreen(
                     modifier = Modifier.fillMaxSize(),
                 )
                 MapFollowZoomControls(
-                    isFollowing = followPointing,
-                    onEnableFollow = { followPointing = true },
+                    followMode = followMode,
+                    hasTelescope = menu.isTelescopeConnected,
+                    onFollowModeChange = { followMode = it },
                     onZoomIn = { onViewportChange(viewport.zoomedBy(MAP_ZOOM_STEP_FACTOR)) },
                     onZoomOut = { onViewportChange(viewport.zoomedBy(1f / MAP_ZOOM_STEP_FACTOR)) },
                     onOpenFilter = { showFilterSheet = true },
@@ -227,6 +308,65 @@ fun MapScreen(
             filter = mapObjectFilter,
             onFilterChange = onMapObjectFilterChange,
             onDismiss = { showFilterSheet = false },
+        )
+    }
+
+    if (showHomeConfirmation) {
+        AlertDialog(
+            onDismissRequest = { showHomeConfirmation = false },
+            title = { Text("Send telescope home?") },
+            text = { Text("The mount will slew away from its current position, off whatever it's pointed at now.") },
+            confirmButton = {
+                TextButton(onClick = { showHomeConfirmation = false; coroutineScope.launch { onMoveHomeTelescope() } }) { Text("Send home") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showHomeConfirmation = false }) { Text("Cancel") }
+            },
+        )
+    }
+
+    if (showTelescopeSheet) {
+        val connectionState by telescopeConnectionState.collectAsState()
+        val reportedPosition by telescopeReportedPosition.collectAsState()
+        val mountSyncResults by telescopeMountSyncResults.collectAsState()
+        TelescopeSheet(
+            connectionState = connectionState,
+            reportedPosition = reportedPosition,
+            mountSyncResults = mountSyncResults,
+            initialTcpHost = initialTelescopeTcpHost,
+            initialTcpPort = initialTelescopeTcpPort,
+            onConnectTcp = onConnectTelescopeTcp,
+            showBluetoothSection = showTelescopeBluetoothSection,
+            bondedBluetoothDevices = bondedTelescopeBluetoothDevices,
+            onPairNewDevice = onPairNewTelescopeBluetoothDevice,
+            initialBluetoothAddress = initialTelescopeBluetoothAddress,
+            onConnectBluetooth = onConnectTelescopeBluetooth,
+            // Nothing may be selected on this screen at all, unlike Guidance's fixed target.
+            gotoEnabled = selectedTarget != null,
+            onGoto = performTelescopeGoto,
+            onAbortSlew = performTelescopeAbort,
+            slewError = slewError,
+            onMoveHome = { showHomeConfirmation = true },
+            onDisconnect = { coroutineScope.launch { onDisconnectTelescope() } },
+            slewRatePreset = slewRatePreset,
+            onSlewRatePresetChange = { preset -> coroutineScope.launch { onSlewRatePresetChange(preset) } },
+            trackingEnabled = trackingEnabled,
+            // Applied optimistically only once the mount has accepted: a refused enable (OnStep
+            // will not start tracking while parked) must leave the toggle showing the mount's real
+            // state, not the state the user asked for.
+            onTrackingEnabledChange = { desired ->
+                coroutineScope.launch {
+                    if (onSetTelescopeTracking(desired)) {
+                        trackingEnabled = desired
+                        trackingError = null
+                    } else {
+                        trackingError = if (desired) "Mount refused to start tracking — is it parked?"
+                        else "Mount refused to stop tracking."
+                    }
+                }
+            },
+            trackingError = trackingError,
+            onDismiss = { showTelescopeSheet = false },
         )
     }
 }

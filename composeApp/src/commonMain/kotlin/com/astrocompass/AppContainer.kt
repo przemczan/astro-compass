@@ -98,7 +98,7 @@ class AppContainer(
     tcpTransportFactory: (host: String, port: Int) -> TelescopeTransport = ::TcpTelescopeTransport,
     bluetoothTransportFactory: (address: String) -> TelescopeTransport,
     /** True only where Bluetooth Classic SPP is a real platform capability (Android) -- lets
-     *  [com.astrocompass.ui.screens.TelescopeScreen] hide the whole Bluetooth section on iOS
+     *  [com.astrocompass.ui.components.TelescopeSheet] hide the whole Bluetooth section on iOS
      *  rather than showing an always-empty paired-device list. */
     val supportsBluetoothTelescope: Boolean = false,
     private val bondedBluetoothDevicesProvider: () -> List<Pair<String, String>> = { emptyList() },
@@ -365,9 +365,9 @@ class AppContainer(
     suspend fun readTelescopeTracking(): Boolean? = telescopeConnection.readTrackingEnabled()
 
     /** Re-queried on every call rather than cached -- the paired-device list can change any time
-     *  the user visits Android's own Bluetooth settings, and [com.astrocompass.ui.screens.TelescopeScreen]
+     *  the user visits Android's own Bluetooth settings, and [com.astrocompass.ui.components.TelescopeSheet]
      *  re-queries it on resume (see its `LifecycleResumeEffect`) so a pairing done via
-     *  [pairNewBluetoothDevice] while the screen stays on-screen is picked up too. */
+     *  [pairNewBluetoothDevice] while the sheet stays open is picked up too. */
     fun bondedBluetoothDevices(): List<Pair<String, String>> = bondedBluetoothDevicesProvider()
 
     /** Opens the platform's Bluetooth settings so the user can pair a new device -- Android/iOS

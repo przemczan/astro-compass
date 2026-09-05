@@ -13,7 +13,6 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Explore
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material.icons.filled.SettingsInputAntenna
 import androidx.compose.material3.BottomAppBar
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -33,21 +32,22 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.dp
 import com.astrocompass.guiding.AlignmentStatus
 
-/** Connecting to a mount and setting up its alignment is useful on its own even while guiding
- *  stays phone-driven, so this entry is never gated on a live connection. */
-private const val SHOW_TELESCOPE_ENTRIES = true
-
 /** The app-wide destinations every bottom bar's menu offers, passed down from `App.kt` so no screen
  *  has to carry them as individual parameters. [alignmentStatus] is a claim about the *phone's*
  *  calibration specifically -- not [com.astrocompass.guiding.PointingService.isAligned], which is
  *  also true under the compass fallback; see [AlignmentStatus]'s own doc comment for the three-way
- *  distinction it draws. */
+ *  distinction it draws.
+ *
+ *  Telescope connection/setup is deliberately absent from this menu -- it lives behind each
+ *  screen's own "Telescope" toolbar button and the [com.astrocompass.ui.components.TelescopeSheet]
+ *  it opens (which now folds in the connection form too), not a separate destination reached from
+ *  here. [isTelescopeConnected] survives only because the toolbar button itself needs it, to tint
+ *  its own connected/disconnected state. */
 data class AppMenuActions(
     val alignmentStatus: AlignmentStatus,
     val onOpenAlignment: () -> Unit,
     val onOpenNightWizard: () -> Unit,
     val onOpenSettings: () -> Unit,
-    val onOpenTelescope: () -> Unit,
     val isTelescopeConnected: Boolean,
 )
 
@@ -126,14 +126,6 @@ private fun AppMenuButton(menu: AppMenuActions) {
                 label = "Settings",
                 onClick = { expanded = false; menu.onOpenSettings() },
             )
-            if (SHOW_TELESCOPE_ENTRIES) {
-                AppMenuItem(
-                    icon = Icons.Default.SettingsInputAntenna,
-                    label = "Telescope",
-                    supportingText = if (menu.isTelescopeConnected) "Connected" else null,
-                    onClick = { expanded = false; menu.onOpenTelescope() },
-                )
-            }
         }
     }
 }

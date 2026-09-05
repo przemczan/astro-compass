@@ -24,6 +24,7 @@ import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.SettingsInputAntenna
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Tune
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -33,6 +34,7 @@ import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -63,15 +65,19 @@ import com.astrocompass.guiding.GuidanceCalculator
 import com.astrocompass.guiding.SkyPointingSource
 import com.astrocompass.guiding.currentHorizontal
 import com.astrocompass.location.ObserverLocation
+import com.astrocompass.telescope.MountSyncStepResult
 import com.astrocompass.telescope.MoveRatePreset
 import com.astrocompass.telescope.SlewOutcome
 import com.astrocompass.telescope.SlewRatePreset
+import com.astrocompass.telescope.TelescopeConnectionState
 import com.astrocompass.telescope.TelescopeDirection
+import com.astrocompass.telescope.TelescopeReport
 import com.astrocompass.ui.components.AppBottomBar
 import com.astrocompass.ui.components.AppMenuActions
 import com.astrocompass.ui.components.DeltaBar
 import com.astrocompass.ui.components.MAP_ZOOM_STEP_FACTOR
 import com.astrocompass.ui.components.MapFilterSheet
+import com.astrocompass.ui.components.MapFollowMode
 import com.astrocompass.ui.components.MapFollowZoomControls
 import com.astrocompass.ui.components.ToolbarCancelButton
 import com.astrocompass.ui.components.mapOverlayScrim
@@ -128,6 +134,19 @@ fun GuidanceScreen(
     onAbortSlew: suspend () -> Unit,
     onMoveHome: suspend () -> Unit,
     onDisconnectTelescope: suspend () -> Unit,
+    // The Telescope sheet's own connection form -- see TelescopeSheet's doc comment for why this
+    // lives in the sheet now rather than a separate screen reached from the app menu.
+    telescopeConnectionState: StateFlow<TelescopeConnectionState>,
+    telescopeReportedPosition: StateFlow<TelescopeReport?>,
+    telescopeMountSyncResults: StateFlow<List<MountSyncStepResult>>,
+    initialTelescopeTcpHost: String,
+    initialTelescopeTcpPort: Int,
+    onConnectTelescopeTcp: suspend (host: String, port: Int) -> Unit,
+    showTelescopeBluetoothSection: Boolean,
+    bondedTelescopeBluetoothDevices: () -> List<Pair<String, String>>,
+    onPairNewTelescopeBluetoothDevice: () -> Unit,
+    initialTelescopeBluetoothAddress: String?,
+    onConnectTelescopeBluetooth: suspend (address: String, name: String) -> Unit,
     /** Hand-controller motion for the floating "Manual controls" sheet -- press/release and the
      *  rate it moves at. [onStopAllMotion] is deliberately not suspending; see [TelescopeControlPad]. */
     onPressDirection: suspend (TelescopeDirection) -> Unit,
@@ -199,7 +218,11 @@ fun GuidanceScreen(
         if (telescopeOnTarget) telescopeSlewing = false
     }
     var mapViewport by remember { mutableStateOf(SkyMapViewport.DEFAULT) }
-    var followPointing by remember { mutableStateOf(true) }
+    // Only ever PHONE or NONE: Guidance is phone-only by design (see this file's own doc comment),
+    // so MapFollowZoomControls is always told hasTelescope = false below regardless of any real
+    // mount connection, keeping this a plain two-state toggle even though the type now also has
+    // a TELESCOPE case (which the Map screen's own follow button does use).
+    var followMode by remember { mutableStateOf(MapFollowMode.PHONE) }
     // Deriving this directly during composition, rather than centering mapViewport itself via a
     // LaunchedEffect keyed on currentPointing, matters: that LaunchedEffect's state write landed
     // one recomposition *after* the currentPointing update that triggered it, so the current-
@@ -207,7 +230,11 @@ fun GuidanceScreen(
     // frame off-center before the camera caught up -- visible as a small jump on every sensor
     // sample while panning/tilting the phone. This has no such gap: displayedViewport is exactly
     // in step with currentPointing on every recomposition, sensor-driven or not.
-    val displayedViewport = if (followPointing && currentPointing != null) {
+    //
+    // The cost of never writing back is that mapViewport goes stale the moment follow turns on --
+    // see MapFollowZoomControls' onFollowModeChange below for why turning it back off has to
+    // account for that explicitly rather than just falling back to mapViewport as-is.
+    val displayedViewport = if (followMode == MapFollowMode.PHONE && currentPointing != null) {
         val horizontal = HorizontalCoordinates.fromEnu(currentPointing!!)
         mapViewport.copy(centerAzimuth = horizontal.azimuth, centerAltitude = horizontal.altitude)
     } else {
@@ -220,6 +247,10 @@ fun GuidanceScreen(
     // of an assumed state.
     var showFilterSheet by remember { mutableStateOf(false) }
     var showTelescopeSheet by remember { mutableStateOf(false) }
+    // Shared by both places the mount can be sent home from -- the floating TelescopeActionRow and
+    // the Telescope sheet's own button -- so confirming (or canceling) from either behaves
+    // identically, and there's exactly one dialog to keep in sync rather than two.
+    var showHomeConfirmation by remember { mutableStateOf(false) }
     var trackingEnabled by remember { mutableStateOf<Boolean?>(null) }
     var trackingError by remember { mutableStateOf<String?>(null) }
     var slewError by remember { mutableStateOf<String?>(null) }
@@ -374,7 +405,7 @@ fun GuidanceScreen(
                 directions = snapshot.directions,
                 viewport = displayedViewport,
                 onViewportChange = { mapViewport = it },
-                onManualInteraction = { followPointing = false },
+                onManualInteraction = { followMode = MapFollowMode.NONE },
                 constellationLines = snapshot.constellationLines,
                 milkyWayCells = snapshot.milkyWayCells,
                 milkyWayGridStepDegrees = snapshot.milkyWayGridStepDegrees,
@@ -401,8 +432,18 @@ fun GuidanceScreen(
                 modifier = Modifier.fillMaxSize(),
             )
             MapFollowZoomControls(
-                isFollowing = followPointing,
-                onEnableFollow = { followPointing = true },
+                followMode = followMode,
+                hasTelescope = false,
+                // Turning follow off specifically (not on) first commits displayedViewport --
+                // wherever the map is actually showing right now -- into mapViewport. Without this,
+                // mapViewport is still sitting wherever it was before follow last turned on (see its
+                // own doc comment on why display and storage are split), so switching off would
+                // otherwise snap the map back to that stale spot instead of leaving it where it
+                // visibly was.
+                onFollowModeChange = { newMode ->
+                    if (newMode == MapFollowMode.NONE) mapViewport = displayedViewport
+                    followMode = newMode
+                },
                 onZoomIn = { mapViewport = mapViewport.zoomedBy(MAP_ZOOM_STEP_FACTOR) },
                 onZoomOut = { mapViewport = mapViewport.zoomedBy(1f / MAP_ZOOM_STEP_FACTOR) },
                 onOpenFilter = { showFilterSheet = true },
@@ -432,7 +473,7 @@ fun GuidanceScreen(
                         onGoto = performGoto,
                         onAbort = performAbort,
                         onOpenControls = { showTelescopeControls = true },
-                        onMoveHome = { scope.launch { onMoveHome() } },
+                        onMoveHome = { showHomeConfirmation = true },
                         modifier = Modifier.padding(bottom = 8.dp),
                     )
                 }
@@ -471,14 +512,43 @@ fun GuidanceScreen(
         )
     }
 
+    if (showHomeConfirmation) {
+        AlertDialog(
+            onDismissRequest = { showHomeConfirmation = false },
+            title = { Text("Send telescope home?") },
+            text = { Text("The mount will slew away from its current position, off whatever it's pointed at now.") },
+            confirmButton = {
+                TextButton(onClick = { showHomeConfirmation = false; scope.launch { onMoveHome() } }) { Text("Send home") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showHomeConfirmation = false }) { Text("Cancel") }
+            },
+        )
+    }
+
     if (showTelescopeSheet) {
+        val connectionState by telescopeConnectionState.collectAsState()
+        val reportedPosition by telescopeReportedPosition.collectAsState()
+        val mountSyncResults by telescopeMountSyncResults.collectAsState()
         TelescopeSheet(
-            isConnected = menu.isTelescopeConnected,
-            onConnect = { showTelescopeSheet = false; menu.onOpenTelescope() },
+            connectionState = connectionState,
+            reportedPosition = reportedPosition,
+            mountSyncResults = mountSyncResults,
+            initialTcpHost = initialTelescopeTcpHost,
+            initialTcpPort = initialTelescopeTcpPort,
+            onConnectTcp = onConnectTelescopeTcp,
+            showBluetoothSection = showTelescopeBluetoothSection,
+            bondedBluetoothDevices = bondedTelescopeBluetoothDevices,
+            onPairNewDevice = onPairNewTelescopeBluetoothDevice,
+            initialBluetoothAddress = initialTelescopeBluetoothAddress,
+            onConnectBluetooth = onConnectTelescopeBluetooth,
+            // Always enabled: Guidance always has a fixed target (see this screen's own `target`
+            // param), unlike the Map screen's sheet where nothing may be selected yet.
+            gotoEnabled = true,
             onGoto = performGoto,
             onAbortSlew = performAbort,
             slewError = slewError,
-            onMoveHome = { scope.launch { onMoveHome() } },
+            onMoveHome = { showHomeConfirmation = true },
             onDisconnect = { scope.launch { onDisconnectTelescope() } },
             slewRatePreset = slewRatePreset,
             onSlewRatePresetChange = { preset -> scope.launch { onSlewRatePresetChange(preset) } },

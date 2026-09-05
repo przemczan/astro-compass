@@ -72,6 +72,7 @@ import com.astrocompass.ui.components.AppBottomBar
 import com.astrocompass.ui.components.AppMenuActions
 import com.astrocompass.ui.components.MAP_ZOOM_STEP_FACTOR
 import com.astrocompass.ui.components.MapFilterSheet
+import com.astrocompass.ui.components.MapFollowMode
 import com.astrocompass.ui.components.MapFollowZoomControls
 import com.astrocompass.ui.components.SkyMap
 import com.astrocompass.ui.components.SkyMapMarker
@@ -390,8 +391,9 @@ fun StarAlignmentStep(
             // Nothing to follow here -- this map has no live pointing marker on it -- so the
             // follow button stays permanently off, leaving zoom and the filter as the live controls.
             MapFollowZoomControls(
-                isFollowing = false,
-                onEnableFollow = {},
+                followMode = MapFollowMode.NONE,
+                hasTelescope = false,
+                onFollowModeChange = {},
                 onZoomIn = { viewport = viewport.zoomedBy(MAP_ZOOM_STEP_FACTOR) },
                 onZoomOut = { viewport = viewport.zoomedBy(1f / MAP_ZOOM_STEP_FACTOR) },
                 onOpenFilter = { showFilterSheet = true },

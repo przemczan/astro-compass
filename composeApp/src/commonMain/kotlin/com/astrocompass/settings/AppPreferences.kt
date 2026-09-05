@@ -163,8 +163,15 @@ class AppPreferences(private val settings: Settings) {
     }
 
     /** Multiplies [com.astrocompass.ui.components.SkyMap]'s Milky Way blob alpha -- 0 hides the
-     *  cloud entirely, 1 (the default) is the map's own tuned brightness, 2 is as bright as that
-     *  gets. A dial rather than a boolean since "subtle cloud" is inherently a matter of taste. */
+     *  cloud entirely, 2 is as bright as that gets. Settings shows this 0..2 range relabeled as
+     *  0-100% (so its own tuned brightness, 1, reads as the slider's midpoint, 50%) -- the stored
+     *  value and its meaning to [com.astrocompass.ui.components.SkyMap] are unchanged, only the
+     *  displayed number is a fraction of the slider's max rather than of this default. Defaults to
+     *  20% on that same relabeled scale (0.4 here) -- dimmer than the map's own tuned brightness,
+     *  since that default plus this app's other subtlety knobs (jitter, overlap) already read as
+     *  fairly present; letting a user turn it up from a dim, unobtrusive start is a gentler first
+     *  impression than turning it down from something that already reads as fairly prominent. A
+     *  dial rather than a boolean since "subtle cloud" is inherently a matter of taste. */
     val milkyWayBrightness = MutableStateFlow(settings.getFloat(KEY_MILKY_WAY_BRIGHTNESS, DEFAULT_MILKY_WAY_BRIGHTNESS))
     fun setMilkyWayBrightness(brightness: Float) {
         val clamped = brightness.coerceIn(0f, 2f)
@@ -236,7 +243,7 @@ class AppPreferences(private val settings: Settings) {
         settings.putFloat(KEY_WIZARD_MIN_ALTITUDE, degrees)
     }
 
-    /** Last-used telescope TCP host/port (see [com.astrocompass.ui.screens.TelescopeScreen]).
+    /** Last-used telescope TCP host/port (see [com.astrocompass.ui.components.TelescopeSheet]).
      *  The port default follows SkyFi's documented convention, not a true LX200 standard --
      *  editable from the start since it's a guess, not a protocol constant. */
     val telescopeTcpHost = MutableStateFlow(settings.getStringOrNull(KEY_TELESCOPE_TCP_HOST) ?: "")
@@ -318,6 +325,6 @@ class AppPreferences(private val settings: Settings) {
         const val DEFAULT_WIZARD_MAGNITUDE_LIMIT = 9f
         const val DEFAULT_WIZARD_MIN_ALTITUDE_DEGREES = 20f
         const val DEFAULT_TELESCOPE_TCP_PORT = 4030
-        const val DEFAULT_MILKY_WAY_BRIGHTNESS = 1f
+        const val DEFAULT_MILKY_WAY_BRIGHTNESS = 0.4f
     }
 }

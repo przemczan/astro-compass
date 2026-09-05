@@ -302,7 +302,7 @@ private fun CenterCrosshairStep(
     }
 }
 
-/** Same select-box look as `TelescopeScreen`'s Bluetooth device picker -- a plain full-width
+/** Same select-box look as `TelescopeSheet`'s Bluetooth device picker -- a plain full-width
  *  [OutlinedButton] with a trailing dropdown-arrow icon, rather than a bare labeled button, so it
  *  reads as a selector and not as another wizard action button (it was mistaken for one -- e.g.
  *  "Back" -- when it just showed the current camera's label). */

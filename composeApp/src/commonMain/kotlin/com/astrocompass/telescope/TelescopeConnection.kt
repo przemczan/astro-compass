@@ -98,7 +98,7 @@ interface TelescopeConnection {
      * [connect] always ends with every [MountSyncStep] entry present, even without a known
      * location yet -- [MountSyncStep.SITE] alone reports [MountSyncStepOutcome.Skipped] rather
      * than the whole sequence silently not running. Purely informational for
-     * [com.astrocompass.ui.screens.TelescopeScreen] -- nothing in the app gates on this, and it
+     * [com.astrocompass.ui.components.TelescopeSheet] -- nothing in the app gates on this, and it
      * never blocks or reverses [state]: an already-unparked mount rejecting [MountSyncStep.UNPARK]
      * is routine, not an error. Tracking-enable is deliberately [MountSyncStepOutcome.Skipped]
      * rather than attempted -- see [MountSyncStep.TRACKING]'s doc.

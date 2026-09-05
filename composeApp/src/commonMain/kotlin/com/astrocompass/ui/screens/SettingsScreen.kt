@@ -249,8 +249,12 @@ private fun HorizonDimmingSection(preferences: AppPreferences) {
 @Composable
 private fun MilkyWayBrightnessSection(preferences: AppPreferences) {
     val current by preferences.milkyWayBrightness.collectAsState()
+    // The stored/slider value still spans its real 0..2 range (see AppPreferences.milkyWayBrightness's
+    // doc comment for why) -- only the displayed percentage is relabeled as a fraction of the
+    // slider's own max (2 -> 100%) rather than of the map's tuned default (1 -> 100%), so "off to
+    // 100%" reads as the slider's own full range rather than stopping at its old halfway point.
     Text(
-        "Milky Way: ${if (current <= 0f) "Off" else "${(current * 100).roundToInt()}%"}",
+        "Milky Way: ${if (current <= 0f) "Off" else "${(current * 50).roundToInt()}%"}",
         style = MaterialTheme.typography.bodyMedium,
         modifier = Modifier.padding(top = 8.dp),
     )

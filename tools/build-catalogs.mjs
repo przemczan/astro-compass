@@ -307,6 +307,38 @@ async function buildConstellationLines() {
 // change -- see CatalogFormat.decodeMilkyWayCells.
 const MILKY_WAY_GRID_STEP_DEGREES = 3.5;
 
+// Fraction of MILKY_WAY_GRID_STEP_DEGREES each cell's *rendered* position is randomly nudged by
+// (both RA and Dec, independently) -- a perfectly regular lattice of soft blobs is visibly a
+// lattice once composited, no matter how generously the blobs overlap: rows of same-declination
+// cells read as faint arcs once projected, and the repeating over/under-overlap between orthogonal
+// vs. diagonal neighbors reads as a grid. Breaking the strict regularity turns that periodic
+// artifact into unstructured texture instead, the same reasoning procedural cloud/terrain
+// rendering uses dithered/jittered sampling for. Deterministic (seeded from each cell's own grid
+// index, not Math.random()) so re-running this script reproduces byte-identical output. Density
+// *sampling* (which contour a cell belongs to) still happens on the clean, unjittered grid -- only
+// where the resulting blob gets drawn is nudged -- so the cloud's overall shape still tracks the
+// source contours exactly; only its texture changes. Kept comfortably under 0.5 so a jittered cell
+// never crosses into a neighboring cell's own grid square. First-pass tuning value, not derived
+// from anything.
+const MILKY_WAY_JITTER_FRACTION = 0.3;
+
+// A small, fast, deterministic hash (mulberry32's mixing step) -- not cryptographic, doesn't need
+// to be, just needs to scatter nearby integer seeds into uncorrelated [0, 1) outputs so adjacent
+// grid cells don't jitter in visibly similar directions.
+function hash01(seed) {
+  let t = (seed + 0x6d2b79f5) | 0;
+  t = Math.imul(t ^ (t >>> 15), t | 1);
+  t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+  return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+}
+
+// axisSalt distinguishes the RA nudge from the Dec nudge for the same cell -- without it both
+// axes would hash to the same value and every cell would jitter along the diagonal only.
+function jitterDegrees(raIndex, decIndex, axisSalt) {
+  const seed = (raIndex * 374761393 + decIndex * 668265263 + axisSalt * 2246822519) | 0;
+  return (hash01(seed) * 2 - 1) * MILKY_WAY_JITTER_FRACTION * MILKY_WAY_GRID_STEP_DEGREES;
+}
+
 // Containment is tested via d3-geo's geoContains rather than a hand-rolled planar test. mw.json's
 // rings live on a sphere (RA/Dec); a first attempt at this used equirectangular ray-casting with
 // per-edge antimeridian unwrapping, which seemed sound but broke down in practice -- ol1's outer
@@ -330,11 +362,17 @@ async function buildMilkyWay() {
 
   const step = MILKY_WAY_GRID_STEP_DEGREES;
   const cells = [];
-  for (let decDeg = -90 + step / 2; decDeg < 90; decDeg += step) {
-    for (let raDeg = -180 + step / 2; raDeg < 180; raDeg += step) {
+  let decIndex = 0;
+  for (let decDeg = -90 + step / 2; decDeg < 90; decDeg += step, decIndex++) {
+    let raIndex = 0;
+    for (let raDeg = -180 + step / 2; raDeg < 180; raDeg += step, raIndex++) {
       for (const l of levels) {
         if (geoContains(l.feature, [raDeg, decDeg])) {
-          cells.push({ raDeg, decDeg, level: l.level });
+          cells.push({
+            raDeg: raDeg + jitterDegrees(raIndex, decIndex, 1),
+            decDeg: decDeg + jitterDegrees(raIndex, decIndex, 2),
+            level: l.level,
+          });
           break;
         }
       }

@@ -25,7 +25,6 @@ import com.astrocompass.ui.screens.NightWizardListScreen
 import com.astrocompass.ui.screens.NightWizardOptionsScreen
 import com.astrocompass.ui.screens.SearchScreen
 import com.astrocompass.ui.screens.SettingsScreen
-import com.astrocompass.ui.screens.TelescopeScreen
 import com.astrocompass.telescope.TelescopeConnectionState
 import com.astrocompass.telescope.TelescopeEndpoint
 import com.astrocompass.telescope.TelescopeTransportKind
@@ -46,7 +45,6 @@ fun GuiderApp(container: AppContainer, onExitApp: () -> Unit = {}) {
         var showAlignment by remember { mutableStateOf(false) }
         var showSettings by remember { mutableStateOf(false) }
         var showSearch by remember { mutableStateOf(false) }
-        var showTelescope by remember { mutableStateOf(false) }
 
         // Night Wizard: nightWizardObjects is the fixed candidate snapshot computed once by
         // NightWizardOptionsScreen's "Next" -- both the list-preview screen and the guide screen's
@@ -161,7 +159,6 @@ fun GuiderApp(container: AppContainer, onExitApp: () -> Unit = {}) {
                 // One step back up the alignment wizard, leaving the screen only from its first
                 // step -- the same walk its toolbar's own Back button does.
                 showAlignment -> if (!alignmentSession.stepBack()) showAlignment = false
-                showTelescope -> showTelescope = false
                 showSearch -> showSearch = false
                 showNightWizardOptions -> if (resumeWizardAfterOptions) resumeWizard() else cancelWizard()
                 nightWizardObjects != null && !nightWizardStarted -> openWizardOptions()
@@ -170,7 +167,7 @@ fun GuiderApp(container: AppContainer, onExitApp: () -> Unit = {}) {
             }
         }
         BackHandler(
-            enabled = showSettings || showAlignment || showTelescope || showSearch || isGuiding ||
+            enabled = showSettings || showAlignment || showSearch || isGuiding ||
                 showNightWizardOptions || (nightWizardObjects != null && !nightWizardStarted),
             onBack = goBack,
         )
@@ -182,7 +179,6 @@ fun GuiderApp(container: AppContainer, onExitApp: () -> Unit = {}) {
             onOpenAlignment = { isGuiding = false; showAlignment = true },
             onOpenNightWizard = { showNightWizardOptions = true },
             onOpenSettings = { showSettings = true },
-            onOpenTelescope = { showTelescope = true },
             isTelescopeConnected = isTelescopeConnected,
         )
 
@@ -235,36 +231,6 @@ fun GuiderApp(container: AppContainer, onExitApp: () -> Unit = {}) {
                 onExit = { showAlignment = false },
                 modifier = Modifier.fillMaxSize(),
             )
-
-            showTelescope -> {
-                TelescopeScreen(
-                    connectionState = container.telescopeConnection.state,
-                    reportedPosition = container.telescopeConnection.reportedPosition,
-                    mountSyncResults = container.telescopeConnection.mountSyncResults,
-                    initialTcpHost = container.preferences.telescopeTcpHost.value,
-                    initialTcpPort = container.preferences.telescopeTcpPort.value,
-                    onConnectTcp = { host, port ->
-                        container.preferences.setTelescopeTcpHost(host)
-                        container.preferences.setTelescopeTcpPort(port)
-                        container.connectTelescope(
-                            TelescopeEndpoint(TelescopeTransportKind.TCP, displayName = host, host = host, port = port),
-                        )
-                    },
-                    showBluetoothSection = container.supportsBluetoothTelescope,
-                    bondedBluetoothDevices = { container.bondedBluetoothDevices() },
-                    onPairNewDevice = { container.pairNewBluetoothDevice() },
-                    initialBluetoothAddress = container.preferences.telescopeBluetoothAddress.value,
-                    onConnectBluetooth = { address, name ->
-                        container.preferences.setTelescopeBluetoothAddress(address)
-                        container.connectTelescope(
-                            TelescopeEndpoint(TelescopeTransportKind.BLUETOOTH_CLASSIC, displayName = name, bluetoothAddress = address),
-                        )
-                    },
-                    onDisconnect = { container.disconnectTelescope() },
-                    onBack = goBack,
-                    modifier = Modifier.fillMaxSize(),
-                )
-            }
 
             // Matched ahead of guidance and the wizard: Search opens *over* whichever screen
             // launched it and its result lands back on that same screen, so selecting a result only
@@ -358,6 +324,28 @@ fun GuiderApp(container: AppContainer, onExitApp: () -> Unit = {}) {
                     onAbortSlew = { container.abortTelescopeSlew() },
                     onMoveHome = { container.moveTelescopeHome() },
                     onDisconnectTelescope = { container.disconnectTelescope() },
+                    telescopeConnectionState = container.telescopeConnection.state,
+                    telescopeReportedPosition = container.telescopeConnection.reportedPosition,
+                    telescopeMountSyncResults = container.telescopeConnection.mountSyncResults,
+                    initialTelescopeTcpHost = container.preferences.telescopeTcpHost.value,
+                    initialTelescopeTcpPort = container.preferences.telescopeTcpPort.value,
+                    onConnectTelescopeTcp = { host, port ->
+                        container.preferences.setTelescopeTcpHost(host)
+                        container.preferences.setTelescopeTcpPort(port)
+                        container.connectTelescope(
+                            TelescopeEndpoint(TelescopeTransportKind.TCP, displayName = host, host = host, port = port),
+                        )
+                    },
+                    showTelescopeBluetoothSection = container.supportsBluetoothTelescope,
+                    bondedTelescopeBluetoothDevices = { container.bondedBluetoothDevices() },
+                    onPairNewTelescopeBluetoothDevice = { container.pairNewBluetoothDevice() },
+                    initialTelescopeBluetoothAddress = container.preferences.telescopeBluetoothAddress.value,
+                    onConnectTelescopeBluetooth = { address, name ->
+                        container.preferences.setTelescopeBluetoothAddress(address)
+                        container.connectTelescope(
+                            TelescopeEndpoint(TelescopeTransportKind.BLUETOOTH_CLASSIC, displayName = name, bluetoothAddress = address),
+                        )
+                    },
                     onPressDirection = { direction -> container.startTelescopeMove(direction) },
                     onReleaseDirection = { direction -> container.stopTelescopeMove(direction) },
                     onMoveRateChange = { preset -> container.setTelescopeMoveRatePreset(preset) },
@@ -415,6 +403,36 @@ fun GuiderApp(container: AppContainer, onExitApp: () -> Unit = {}) {
                 onMapObjectFilterChange = { container.preferences.setMapObjectFilter(it) },
                 onOpenSearch = { showSearch = true },
                 onExitApp = onExitApp,
+                onGotoTelescope = { target -> container.slewTelescopeTo(target, currentEpochMillis()) },
+                onAbortSlewTelescope = { container.abortTelescopeSlew() },
+                onMoveHomeTelescope = { container.moveTelescopeHome() },
+                onDisconnectTelescope = { container.disconnectTelescope() },
+                telescopeConnectionState = container.telescopeConnection.state,
+                telescopeReportedPosition = container.telescopeConnection.reportedPosition,
+                telescopeMountSyncResults = container.telescopeConnection.mountSyncResults,
+                initialTelescopeTcpHost = container.preferences.telescopeTcpHost.value,
+                initialTelescopeTcpPort = container.preferences.telescopeTcpPort.value,
+                onConnectTelescopeTcp = { host, port ->
+                    container.preferences.setTelescopeTcpHost(host)
+                    container.preferences.setTelescopeTcpPort(port)
+                    container.connectTelescope(
+                        TelescopeEndpoint(TelescopeTransportKind.TCP, displayName = host, host = host, port = port),
+                    )
+                },
+                showTelescopeBluetoothSection = container.supportsBluetoothTelescope,
+                bondedTelescopeBluetoothDevices = { container.bondedBluetoothDevices() },
+                onPairNewTelescopeBluetoothDevice = { container.pairNewBluetoothDevice() },
+                initialTelescopeBluetoothAddress = container.preferences.telescopeBluetoothAddress.value,
+                onConnectTelescopeBluetooth = { address, name ->
+                    container.preferences.setTelescopeBluetoothAddress(address)
+                    container.connectTelescope(
+                        TelescopeEndpoint(TelescopeTransportKind.BLUETOOTH_CLASSIC, displayName = name, bluetoothAddress = address),
+                    )
+                },
+                slewRatePreset = slewRatePreset,
+                onSlewRatePresetChange = { container.setSlewRatePreset(it) },
+                onReadTelescopeTracking = { container.readTelescopeTracking() },
+                onSetTelescopeTracking = { container.setTelescopeTracking(it) },
                 modifier = Modifier.fillMaxSize(),
             )
         }

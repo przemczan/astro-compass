@@ -224,16 +224,16 @@ private val GRATICULE_ALTITUDE_STEPS_DEGREES = listOf(30.0, 60.0)
 private val GRATICULE_AZIMUTH_STEP_DEGREES = 30.0
 private val GRATICULE_RADIAL_SAMPLE_COUNT = 18
 
-/** Multiplies [SkyMapSnapshot.milkyWayGridStepDegrees] to get each Milky Way cell's soft-edged
- *  blob radius -- > 0.5 so a cell's blob overlaps its immediate neighbors (spaced exactly one grid
- *  step apart) rather than just touching them, and comfortably covers the larger (sqrt(2)x)
- *  diagonal-neighbor spacing too, so the whole grid reads as one continuous cloud with no visible
- *  seams between cells. Expressed as a multiple of the *angular* grid step, not a fixed pixel size,
- *  so this overlap ratio -- and therefore how smooth the cloud looks -- stays the same at every
- *  zoom level: a cell's screen radius and its screen distance to its neighbors both scale by the
- *  same pixelsPerUnit factor, so their ratio never changes. First-pass tuning value, not derived
- *  from anything. */
-private const val MILKY_WAY_CELL_RADIUS_GRID_STEP_MULTIPLIER = 1.3f
+/** Multiplies [SkyMapSnapshot.milkyWayGridStepDegrees] to get each Milky Way cell's *base*
+ *  soft-edged blob radius, at the projection's own center where its local scale is 1 (see
+ *  [drawMilkyWay]'s per-cell correction for everywhere else). Well over the 0.5x/0.71x needed to
+ *  merely reach an orthogonal/diagonal neighbor's own center, so overlapping blobs' gradients stay
+ *  comfortably bright at the midpoint between them rather than dipping visibly -- a smooth cloud
+ *  reads better here than one that still traces individual grid cells. Also comfortably covers the
+ *  worst case tools/build-catalogs.mjs's own per-cell jitter can produce (two adjacent cells
+ *  nudged directly apart), so that jitter can't reopen the gaps this margin exists to close.
+ *  First-pass tuning value, not derived from anything. */
+private const val MILKY_WAY_CELL_RADIUS_GRID_STEP_MULTIPLIER = 2.0f
 
 /** Peak alpha (at each blob's own center, fading to 0 at its edge, same technique as [drawStar]'s
  *  halo) for a Milky Way cell, indexed by [MilkyWayCellDirection.level] - 1 (levels run 1..5, 1 =
@@ -555,11 +555,12 @@ private fun DrawScope.drawGraticule(
 
 /** The Milky Way's diffuse band, as one soft-edged radial-gradient blob per surviving density-grid
  *  cell -- the same halo technique [drawStar] uses for a bright star's glow, here sized so
- *  overlapping neighbor cells (see [MILKY_WAY_CELL_RADIUS_GRID_STEP_MULTIPLIER]) blend into one
- *  continuous cloud instead of a field of visible dots. Drawn straight from ENU directions before
- *  any other backdrop layer, same as [drawHorizon]/[drawGraticule]/[drawConstellationLines] --
- *  everything drawn after it (the graticule, constellation lines, stars) paints over it, which is
- *  the point: it's meant to read as a faint tint behind the chart, not a layer on top of it. */
+ *  overlapping neighbor cells (see [MILKY_WAY_CELL_RADIUS_GRID_STEP_MULTIPLIER] and this function's
+ *  own per-cell scale correction) blend into one continuous cloud instead of a field of visible
+ *  dots. Drawn straight from ENU directions before any other backdrop layer, same as
+ *  [drawHorizon]/[drawGraticule]/[drawConstellationLines] -- everything drawn after it (the
+ *  graticule, constellation lines, stars) paints over it, which is the point: it's meant to read as
+ *  a faint tint behind the chart, not a layer on top of it. */
 private fun DrawScope.drawMilkyWay(
     cells: List<MilkyWayCellDirection>,
     gridStepDegrees: Float,
@@ -573,13 +574,27 @@ private fun DrawScope.drawMilkyWay(
     belowHorizonAlpha: Float,
 ) {
     if (gridStepDegrees <= 0f || brightness <= 0f) return
-    val radiusPlaneUnits = Angle.ofDegrees((gridStepDegrees * MILKY_WAY_CELL_RADIUS_GRID_STEP_MULTIPLIER).toDouble()).radians
-    val radiusPx = (radiusPlaneUnits * pixelsPerUnit).toFloat()
-    if (radiusPx <= 0f) return
+    val baseRadiusPlaneUnits = Angle.ofDegrees((gridStepDegrees * MILKY_WAY_CELL_RADIUS_GRID_STEP_MULTIPLIER).toDouble()).radians
+    if (baseRadiusPlaneUnits <= 0.0) return
 
     for (cell in cells) {
         val point = projection.project(cell.direction) ?: continue
         if (point.x < -maxPlaneX || point.x > maxPlaneX || point.y < -maxPlaneY || point.y > maxPlaneY) continue
+
+        // The stereographic projection is conformal (angle-preserving) but not equal-area: its
+        // local scale grows away from the view center, exactly 1 + r^2/4 where r is this point's
+        // own plane-space distance from center (derived from the projection's r = 2*tan(theta/2),
+        // whose derivative dr/dtheta is 1 + (r/2)^2 -- see StereographicProjection.project/unproject).
+        // At the very edge of a full-hemisphere (180 degree) field of view that factor reaches 2x.
+        // baseRadiusPlaneUnits alone is only correctly sized for a cell sitting exactly at the
+        // center; every other cell's true on-screen distance to its neighbors has been stretched by
+        // this same factor, so leaving its radius unscaled pulls the cloud apart into visible
+        // separate blobs everywhere the projection stretches things most -- wide fields of view,
+        // away from center, which is exactly where this was visibly breaking down.
+        val localScale = 1.0 + (point.x * point.x + point.y * point.y) / 4.0
+        val radiusPx = (baseRadiusPlaneUnits * localScale * pixelsPerUnit).toFloat()
+        if (radiusPx <= 0f) continue
+
         val peakAlpha = MILKY_WAY_LEVEL_ALPHA[(cell.level - 1).coerceIn(0, MILKY_WAY_LEVEL_ALPHA.lastIndex)]
         val alpha = (peakAlpha * brightness * cell.direction.horizonAlpha(belowHorizonAlpha)).coerceIn(0f, 1f)
         val screenPoint = toScreen(point)
