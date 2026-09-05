@@ -162,6 +162,16 @@ class AppPreferences(private val settings: Settings) {
         settings.putBoolean(KEY_DIM_BELOW_HORIZON, dim)
     }
 
+    /** Multiplies [com.astrocompass.ui.components.SkyMap]'s Milky Way blob alpha -- 0 hides the
+     *  cloud entirely, 1 (the default) is the map's own tuned brightness, 2 is as bright as that
+     *  gets. A dial rather than a boolean since "subtle cloud" is inherently a matter of taste. */
+    val milkyWayBrightness = MutableStateFlow(settings.getFloat(KEY_MILKY_WAY_BRIGHTNESS, DEFAULT_MILKY_WAY_BRIGHTNESS))
+    fun setMilkyWayBrightness(brightness: Float) {
+        val clamped = brightness.coerceIn(0f, 2f)
+        milkyWayBrightness.value = clamped
+        settings.putFloat(KEY_MILKY_WAY_BRIGHTNESS, clamped)
+    }
+
     /** Beta: swaps an object's sky-map dot for its bundled photo once zoomed in enough --
      *  see [com.astrocompass.ui.components.SkyMap]'s `objectPhotos`. Defaults on; the setting
      *  exists as an escape hatch since sourcing/orientation on the bundled photos is still rough. */
@@ -284,6 +294,7 @@ class AppPreferences(private val settings: Settings) {
         const val KEY_LAST_TARGET = "last_target_id"
         const val KEY_SHOW_OBJECT_IMAGES = "show_object_images"
         const val KEY_DIM_BELOW_HORIZON = "dim_below_horizon"
+        const val KEY_MILKY_WAY_BRIGHTNESS = "milky_way_brightness"
         const val KEY_SHOW_SOLAR_SYSTEM = "show_solar_system"
         const val KEY_SHOW_GALAXIES = "show_galaxies"
         const val KEY_SHOW_NEBULAE = "show_nebulae"
@@ -307,5 +318,6 @@ class AppPreferences(private val settings: Settings) {
         const val DEFAULT_WIZARD_MAGNITUDE_LIMIT = 9f
         const val DEFAULT_WIZARD_MIN_ALTITUDE_DEGREES = 20f
         const val DEFAULT_TELESCOPE_TCP_PORT = 4030
+        const val DEFAULT_MILKY_WAY_BRIGHTNESS = 1f
     }
 }

@@ -12,10 +12,13 @@
 //
 // Usage: node tools/build-catalogs.mjs [--hyg <path>] [--ngc <path>] [--addendum <path>] [--constellations <path>] [--milkyway <path>]
 //   Omit a flag to fetch that source fresh; pass a local path to reuse an already-downloaded copy.
+//   Needs `npm install` run once in this directory first -- see package.json (only the Milky Way
+//   step needs its one dependency, d3-geo, for correct spherical polygon containment).
 
 import { writeFileSync, readFileSync, mkdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import { geoContains } from 'd3-geo';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const OUT_DIR = join(__dirname, '..', 'composeApp', 'src', 'commonMain', 'composeResources', 'files');
@@ -304,58 +307,25 @@ async function buildConstellationLines() {
 // change -- see CatalogFormat.decodeMilkyWayCells.
 const MILKY_WAY_GRID_STEP_DEGREES = 3.5;
 
-// Point-in-polygon-with-holes via even-odd ray casting, summed (XOR'd) across every ring of a
-// level -- correctly treats a nested ring as a hole regardless of winding direction, and treats
-// multiple disjoint same-level rings (the Milky Way band splits into several unconnected loops
-// across the sky) as independent regions, neither of which a single-ring test could handle.
-//
-// Each edge is unwrapped locally around its own start vertex before the test: d3-celestial's RA
-// is signed (-180..180), and several real rings in mw.json legitimately cross that seam (it falls
-// in the Cygnus/Cassiopeia part of the band) -- a naive planar test would treat what's really a
-// 2-degree-wide edge crossing the seam as an ~358-degree-wide one and corrupt every crossing count
-// along its span.
-function unwrapNear(value, reference) {
-  let v = value;
-  while (v - reference > 180) v -= 360;
-  while (v - reference < -180) v += 360;
-  return v;
-}
-
-function pointInRing(px, py, ring) {
-  let inside = false;
-  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
-    const xi = ring[i][0], yi = ring[i][1];
-    const xj = unwrapNear(ring[j][0], xi), yj = ring[j][1];
-    const qx = unwrapNear(px, xi);
-    const crosses = (yi > py) !== (yj > py);
-    if (crosses && qx < (xj - xi) * (py - yi) / (yj - yi) + xi) inside = !inside;
-  }
-  return inside;
-}
-
-function pointInRings(px, py, rings) {
-  let inside = false;
-  for (const ring of rings) {
-    if (pointInRing(px, py, ring)) inside = !inside;
-  }
-  return inside;
-}
-
+// Containment is tested via d3-geo's geoContains rather than a hand-rolled planar test. mw.json's
+// rings live on a sphere (RA/Dec); a first attempt at this used equirectangular ray-casting with
+// per-edge antimeridian unwrapping, which seemed sound but broke down in practice -- ol1's outer
+// boundary is one 5470-vertex ring spanning nearly the full RA range, and a curve like that is only
+// simple (non-self-intersecting) *on the sphere*, not once flattened into the RA/Dec plane. That
+// planar test put a stray patch of "faint Milky Way" near Dubhe (Ursa Major, nowhere close to the
+// real galactic plane), confirmed wrong against geoContains itself before switching to it outright.
+// geoContains handles a MultiPolygon's holes and disjoint rings on its own, so each level's whole
+// Feature is tested as-is, no manual flattening needed.
 async function buildMilkyWay() {
   const text = await loadText(MILKY_WAY_URL, args.milkyway);
   const geoJson = JSON.parse(text);
 
   // mw.json holds 5 nested brightness contours ("ol1" = widest/faintest, through "ol5" =
-  // smallest/brightest, centered on the galactic core near Sagittarius) as MultiPolygons -- each
-  // "polygon" entry is really a bag of same-level rings (disjoint loops and/or holes), not one
-  // exterior ring per entry, so every ring across a whole feature is flattened into one list and
-  // tested together via pointInRings. Tested brightest-first since the contours nest: a point
-  // inside ol5 is definitely level 5 and the fainter levels don't need checking at all.
+  // smallest/brightest, centered on the galactic core near Sagittarius). Tested brightest-first
+  // since the contours nest: a point inside ol5 is definitely level 5 and the fainter levels don't
+  // need checking at all.
   const levels = geoJson.features
-    .map((f) => ({
-      level: parseInt(f.id.replace('ol', ''), 10),
-      rings: f.geometry.coordinates.flat(1),
-    }))
+    .map((f) => ({ level: parseInt(f.id.replace('ol', ''), 10), feature: f }))
     .sort((a, b) => b.level - a.level);
 
   const step = MILKY_WAY_GRID_STEP_DEGREES;
@@ -363,7 +333,7 @@ async function buildMilkyWay() {
   for (let decDeg = -90 + step / 2; decDeg < 90; decDeg += step) {
     for (let raDeg = -180 + step / 2; raDeg < 180; raDeg += step) {
       for (const l of levels) {
-        if (pointInRings(raDeg, decDeg, l.rings)) {
+        if (geoContains(l.feature, [raDeg, decDeg])) {
           cells.push({ raDeg, decDeg, level: l.level });
           break;
         }

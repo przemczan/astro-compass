@@ -242,7 +242,7 @@ private const val MILKY_WAY_CELL_RADIUS_GRID_STEP_MULTIPLIER = 1.3f
  *  neighbor cells (see [MILKY_WAY_CELL_RADIUS_GRID_STEP_MULTIPLIER]) compound through ordinary
  *  alpha-over blending into a visibly denser cloud without any single blob standing out on its
  *  own. First-pass tuning values, not derived from anything. */
-private val MILKY_WAY_LEVEL_ALPHA = floatArrayOf(0.035f, 0.05f, 0.07f, 0.10f, 0.15f)
+private val MILKY_WAY_LEVEL_ALPHA = floatArrayOf(0.055f, 0.08f, 0.11f, 0.16f, 0.24f)
 
 /**
  * A pannable/zoomable alt-az sky chart: catalog objects as dots/glyphs, an optional set of
@@ -270,6 +270,10 @@ fun SkyMap(
      *  own fixed grid spacing, shared by every cell rather than carried per-cell. */
     milkyWayCells: List<MilkyWayCellDirection> = emptyList(),
     milkyWayGridStepDegrees: Float = 0f,
+    /** Settings -> Appearance dial (0 = hidden, 1 = the map's own tuned brightness, 2 = double
+     *  that) -- multiplies [MILKY_WAY_LEVEL_ALPHA] directly rather than gating a boolean, since
+     *  "subtle cloud" is a matter of taste this app can't get right for everyone by itself. */
+    milkyWayBrightness: Float = 1f,
     /** ENU direction of "true equatorial north" for each object that has a bundled photo -- see
      *  [SkyMapDirectionCache.northOffsetDirections]'s doc comment for why this needs observer
      *  location/time despite each object's own orientation being fixed. Objects missing from this
@@ -432,7 +436,7 @@ fun SkyMap(
         fun isOnScreen(point: PlanePoint) =
             kotlin.math.abs(point.x) <= visibleHalfWidth && kotlin.math.abs(point.y) <= visibleHalfHeight
 
-        drawMilkyWay(milkyWayCells, milkyWayGridStepDegrees, projection, ::toScreen, starColor, pixelsPerUnit, maxPlaneX, maxPlaneY, belowHorizonAlpha)
+        drawMilkyWay(milkyWayCells, milkyWayGridStepDegrees, milkyWayBrightness, projection, ::toScreen, starColor, pixelsPerUnit, maxPlaneX, maxPlaneY, belowHorizonAlpha)
         drawGraticule(projection, ::toScreen, graticuleColor, maxPlaneX, maxPlaneY)
         drawConstellationLines(constellationLines, projection, ::toScreen, constellationLineColor, maxPlaneX, maxPlaneY, belowHorizonAlpha)
         drawHorizon(projection, ::toScreen, horizonColor, maxPlaneX, maxPlaneY)
@@ -559,6 +563,7 @@ private fun DrawScope.drawGraticule(
 private fun DrawScope.drawMilkyWay(
     cells: List<MilkyWayCellDirection>,
     gridStepDegrees: Float,
+    brightness: Float,
     projection: StereographicProjection,
     toScreen: (PlanePoint) -> Offset,
     color: Color,
@@ -567,7 +572,7 @@ private fun DrawScope.drawMilkyWay(
     maxPlaneY: Double,
     belowHorizonAlpha: Float,
 ) {
-    if (gridStepDegrees <= 0f) return
+    if (gridStepDegrees <= 0f || brightness <= 0f) return
     val radiusPlaneUnits = Angle.ofDegrees((gridStepDegrees * MILKY_WAY_CELL_RADIUS_GRID_STEP_MULTIPLIER).toDouble()).radians
     val radiusPx = (radiusPlaneUnits * pixelsPerUnit).toFloat()
     if (radiusPx <= 0f) return
@@ -576,7 +581,7 @@ private fun DrawScope.drawMilkyWay(
         val point = projection.project(cell.direction) ?: continue
         if (point.x < -maxPlaneX || point.x > maxPlaneX || point.y < -maxPlaneY || point.y > maxPlaneY) continue
         val peakAlpha = MILKY_WAY_LEVEL_ALPHA[(cell.level - 1).coerceIn(0, MILKY_WAY_LEVEL_ALPHA.lastIndex)]
-        val alpha = peakAlpha * cell.direction.horizonAlpha(belowHorizonAlpha)
+        val alpha = (peakAlpha * brightness * cell.direction.horizonAlpha(belowHorizonAlpha)).coerceIn(0f, 1f)
         val screenPoint = toScreen(point)
         drawCircle(
             brush = Brush.radialGradient(

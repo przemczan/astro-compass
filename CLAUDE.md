@@ -25,7 +25,10 @@ set `JAVA_HOME` to a JDK 17 install before running Gradle (the wrapper picks it 
 ./gradlew :composeApp:testDebugUnitTest
 
 # Regenerate the bundled star/deep-sky catalogs from source (fetches from GitHub;
-# only the .bin output is committed, so the app's own build stays offline-reproducible)
+# only the .bin output is committed, so the app's own build stays offline-reproducible).
+# First run (or after pulling a change to tools/package.json) needs `npm install` in tools/ --
+# the Milky Way step depends on d3-geo for correct spherical polygon containment.
+(cd tools && npm install)
 node tools/build-catalogs.mjs
 ```
 

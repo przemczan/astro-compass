@@ -54,6 +54,7 @@ import com.astrocompass.update.AppUpdater
 import com.astrocompass.update.InstallOutcome
 import com.astrocompass.update.isNewerVersion
 import kotlinx.coroutines.launch
+import kotlin.math.roundToInt
 
 private const val BUY_ME_A_COFFEE_URL = "https://buymeacoffee.com/przemczan"
 
@@ -98,6 +99,7 @@ fun SettingsScreen(
             SectionTitle("Appearance")
             ThemeSection(preferences)
             HorizonDimmingSection(preferences)
+            MilkyWayBrightnessSection(preferences)
 
             HorizontalDivider(Modifier.padding(vertical = 16.dp))
             SectionTitle("Object images (Beta)")
@@ -242,6 +244,21 @@ private fun HorizonDimmingSection(preferences: AppPreferences) {
         Checkbox(checked = current, onCheckedChange = { preferences.setDimBelowHorizon(it) })
         Text("Dim objects below the horizon", style = MaterialTheme.typography.bodyMedium)
     }
+}
+
+@Composable
+private fun MilkyWayBrightnessSection(preferences: AppPreferences) {
+    val current by preferences.milkyWayBrightness.collectAsState()
+    Text(
+        "Milky Way: ${if (current <= 0f) "Off" else "${(current * 100).roundToInt()}%"}",
+        style = MaterialTheme.typography.bodyMedium,
+        modifier = Modifier.padding(top = 8.dp),
+    )
+    Slider(
+        value = current,
+        onValueChange = { preferences.setMilkyWayBrightness(it) },
+        valueRange = 0f..2f,
+    )
 }
 
 @Composable

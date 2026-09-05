@@ -1,0 +1,9 @@
+{
+  "name": "astro-guider-tools",
+  "private": true,
+  "type": "module",
+  "description": "Dev-time dependencies for tools/build-catalogs.mjs. Never bundled into the app -- see that script's own header comment.",
+  "dependencies": {
+    "d3-geo": "^3.1.1"
+  }
+}

@@ -83,6 +83,7 @@ fun GuiderApp(container: AppContainer, onExitApp: () -> Unit = {}) {
         val toleranceDegrees by container.preferences.onTargetToleranceDegrees.collectAsState()
         val showObjectImages by container.preferences.showObjectImages.collectAsState()
         val dimBelowHorizon by container.preferences.dimBelowHorizon.collectAsState()
+        val milkyWayBrightness by container.preferences.milkyWayBrightness.collectAsState()
         val mapObjectFilter by container.preferences.mapObjectFilter.collectAsState()
         val nightWizardObjectFilter by container.preferences.nightWizardObjectFilter.collectAsState()
         val nightWizardMagnitudeLimit by container.preferences.nightWizardMagnitudeLimit.collectAsState()
@@ -367,6 +368,7 @@ fun GuiderApp(container: AppContainer, onExitApp: () -> Unit = {}) {
                     onSetTracking = { container.setTelescopeTracking(it) },
                     showObjectPhotos = showObjectImages,
                     dimBelowHorizon = dimBelowHorizon,
+                    milkyWayBrightness = milkyWayBrightness,
                     mapObjectFilter = mapObjectFilter,
                     onMapObjectFilterChange = { container.preferences.setMapObjectFilter(it) },
                     wizardProgress = wizardObjects?.let { (nightWizardIndex + 1) to it.size },
@@ -408,6 +410,7 @@ fun GuiderApp(container: AppContainer, onExitApp: () -> Unit = {}) {
                 onViewportChange = { searchViewport = it },
                 showObjectPhotos = showObjectImages,
                 dimBelowHorizon = dimBelowHorizon,
+                milkyWayBrightness = milkyWayBrightness,
                 mapObjectFilter = mapObjectFilter,
                 onMapObjectFilterChange = { container.preferences.setMapObjectFilter(it) },
                 onOpenSearch = { showSearch = true },

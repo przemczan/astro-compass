@@ -140,6 +140,7 @@ fun GuidanceScreen(
     onSetTracking: suspend (Boolean) -> Boolean,
     showObjectPhotos: Boolean,
     dimBelowHorizon: Boolean,
+    milkyWayBrightness: Float,
     mapObjectFilter: MapObjectFilter,
     onMapObjectFilterChange: (MapObjectFilter) -> Unit,
     // Night Wizard mode: non-null wizardProgress swaps the header/toolbar to walk through a fixed
@@ -380,6 +381,7 @@ fun GuidanceScreen(
                 northOffsetDirections = snapshot.northOffsetDirections,
                 showObjectPhotos = showObjectPhotos,
                 dimBelowHorizon = dimBelowHorizon,
+                milkyWayBrightness = milkyWayBrightness,
                 guidancePath = SkyMapGuidancePath(
                     start = currentPointing!!,
                     end = targetDirection,
@@ -409,8 +411,10 @@ fun GuidanceScreen(
 
             ReferenceStatusSection(
                 alignmentStatus = menu.alignmentStatus,
+                // End padding clears MapFollowZoomControls sharing this corner of the map --
+                // same reservation MapScreen's own calibration banner uses.
                 modifier = Modifier.align(Alignment.TopStart)
-                    .padding(8.dp)
+                    .padding(top = 8.dp, start = 8.dp, end = 64.dp)
                     .mapOverlayScrim()
                     .padding(horizontal = 16.dp, vertical = 12.dp),
             )
@@ -561,10 +565,13 @@ private fun ReferenceStatusSection(
     alignmentStatus: AlignmentStatus,
     modifier: Modifier = Modifier,
 ) {
+    // Not fillMaxWidth: this sits at TopStart alongside MapFollowZoomControls at TopEnd (see the
+    // call site's own end-padding reservation), and a full-width scrim would stretch across that
+    // corner and draw over it -- ReferenceStatusSection is composed after it, so on top.
     when (alignmentStatus) {
         AlignmentStatus.CALIBRATED -> {}
-        AlignmentStatus.NOT_CALIBRATED -> Column(modifier.fillMaxWidth()) { CompassModeText(awaitingPlateSolve = false) }
-        AlignmentStatus.AWAITING_FIRST_PLATE_SOLVE -> Column(modifier.fillMaxWidth()) { CompassModeText(awaitingPlateSolve = true) }
+        AlignmentStatus.NOT_CALIBRATED -> Column(modifier) { CompassModeText(awaitingPlateSolve = false) }
+        AlignmentStatus.AWAITING_FIRST_PLATE_SOLVE -> Column(modifier) { CompassModeText(awaitingPlateSolve = true) }
     }
 }
 

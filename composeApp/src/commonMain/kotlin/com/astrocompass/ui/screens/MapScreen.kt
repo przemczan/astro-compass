@@ -91,6 +91,7 @@ fun MapScreen(
     onViewportChange: (SkyMapViewport) -> Unit,
     showObjectPhotos: Boolean,
     dimBelowHorizon: Boolean,
+    milkyWayBrightness: Float,
     mapObjectFilter: MapObjectFilter,
     onMapObjectFilterChange: (MapObjectFilter) -> Unit,
     onOpenSearch: () -> Unit,
@@ -168,6 +169,7 @@ fun MapScreen(
                     northOffsetDirections = snapshot.northOffsetDirections,
                     showObjectPhotos = showObjectPhotos,
                     dimBelowHorizon = dimBelowHorizon,
+                    milkyWayBrightness = milkyWayBrightness,
                     markers = listOfNotNull(
                         selectedTarget?.let { target ->
                             SkyMapMarker(
