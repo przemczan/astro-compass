@@ -2,8 +2,8 @@
 
 AstroCompass bundles three third-party datasets. The app aggregates these into compact binary
 blobs for on-device search, alignment, and the sky map
-(`tools/build-catalogs.mjs` -> `stars.bin` / `dso.bin` / `constellations.bin`); the underlying
-data remains under its original license and must be credited on redistribution.
+(`tools/build-catalogs.mjs` -> `stars.bin` / `dso.bin` / `constellations.bin` / `milkyway.bin`);
+the underlying data remains under its original license and must be credited on redistribution.
 
 ## Stars — HYG Database
 
@@ -20,11 +20,11 @@ data remains under its original license and must be credited on redistribution.
 - Files used: `NGC.csv`, `addendum.csv`
 - License: [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/)
 
-## Constellation lines — d3-celestial
+## Constellation lines & Milky Way outline — d3-celestial
 
 - Source: [ofrohn/d3-celestial](https://github.com/ofrohn/d3-celestial)
 - Author: Olaf Frohn
-- File used: `data/constellations.lines.json`
+- Files used: `data/constellations.lines.json`, `data/mw.json`
 - License: BSD-3-Clause
 
 ## Deep-sky object photos — Digitized Sky Survey (DSS2) via CDS hips2fits

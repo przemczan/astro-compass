@@ -379,6 +379,8 @@ fun StarAlignmentStep(
                 onViewportChange = { viewport = it },
                 markers = syncedMarkers + listOfNotNull(pendingMarker, telescopeDirection?.let(SkyMapMarker::telescope)),
                 constellationLines = snapshot.constellationLines,
+                milkyWayCells = snapshot.milkyWayCells,
+                milkyWayGridStepDegrees = snapshot.milkyWayGridStepDegrees,
                 // Null whenever a pick would go nowhere (see canPickStar): the map stays pannable
                 // as an overview, it just stops being a picker.
                 onSelect = if (canPickStar) { obj -> (obj as? StarObject)?.let(pickStar) } else null,

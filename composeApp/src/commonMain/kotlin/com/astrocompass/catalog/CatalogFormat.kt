@@ -81,4 +81,17 @@ object CatalogFormat {
             ConstellationLine(abbreviation, polylines)
         }
     }
+
+    fun decodeMilkyWayCatalog(bytes: ByteArray): MilkyWayCatalog {
+        val reader = BinaryReader(bytes)
+        val gridStepDegrees = reader.readFloat32()
+        val count = reader.readInt32()
+        val cells = List(count) {
+            val ra = Angle.ofRadians(reader.readFloat32().toDouble())
+            val dec = Angle.ofRadians(reader.readFloat32().toDouble())
+            val level = reader.readUInt8()
+            MilkyWayCell(EquatorialCoordinates(ra, dec), level)
+        }
+        return MilkyWayCatalog(gridStepDegrees, cells)
+    }
 }

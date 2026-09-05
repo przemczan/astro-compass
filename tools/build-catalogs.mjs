@@ -1,16 +1,16 @@
 #!/usr/bin/env node
-// Generates composeApp/src/commonMain/composeResources/files/{stars,dso,constellations}.bin from
-// the HYG star database, OpenNGC deep-sky catalog, and d3-celestial's constellation line data.
-// Run manually/occasionally with `node tools/build-catalogs.mjs` -- this script fetches from the
-// network, but its *output* is committed and the Gradle build never touches the network, so the
-// app build stays reproducible offline.
+// Generates composeApp/src/commonMain/composeResources/files/{stars,dso,constellations,milkyway}.bin
+// from the HYG star database, OpenNGC deep-sky catalog, and d3-celestial's constellation line and
+// Milky Way outline data. Run manually/occasionally with `node tools/build-catalogs.mjs` -- this
+// script fetches from the network, but its *output* is committed and the Gradle build never
+// touches the network, so the app build stays reproducible offline.
 //
 // Sources (all verified 2026-08-08, credited in LICENSES.md):
 //   HYG v4.1        https://github.com/astronexus/HYG-Database  (Astronomy Nexus / David Nash), CC-BY-SA-4.0
 //   OpenNGC         https://github.com/mattiaverga/OpenNGC      (Mattia Verga), CC-BY-SA-4.0
 //   d3-celestial    https://github.com/ofrohn/d3-celestial      (Olaf Frohn), BSD-3-Clause
 //
-// Usage: node tools/build-catalogs.mjs [--hyg <path>] [--ngc <path>] [--addendum <path>] [--constellations <path>]
+// Usage: node tools/build-catalogs.mjs [--hyg <path>] [--ngc <path>] [--addendum <path>] [--constellations <path>] [--milkyway <path>]
 //   Omit a flag to fetch that source fresh; pass a local path to reuse an already-downloaded copy.
 
 import { writeFileSync, readFileSync, mkdirSync } from 'node:fs';
@@ -24,6 +24,7 @@ const HYG_URL = 'https://raw.githubusercontent.com/astronexus/HYG-Database/main/
 const NGC_URL = 'https://raw.githubusercontent.com/mattiaverga/OpenNGC/master/database_files/NGC.csv';
 const ADDENDUM_URL = 'https://raw.githubusercontent.com/mattiaverga/OpenNGC/master/database_files/addendum.csv';
 const CONSTELLATION_LINES_URL = 'https://raw.githubusercontent.com/ofrohn/d3-celestial/master/data/constellations.lines.json';
+const MILKY_WAY_URL = 'https://raw.githubusercontent.com/ofrohn/d3-celestial/master/data/mw.json';
 
 // Stars fainter than this are dropped. Set from HYG's own per-magnitude star counts, not a round
 // number: binning HYG by magnitude, the count per 0.5-mag bin climbs steadily through mag 8.0
@@ -293,6 +294,101 @@ async function buildConstellationLines() {
   console.log(`constellations.bin: ${geoJson.features.length} constellations, ${segments} line segments`);
 }
 
+// Grid resolution (degrees, both RA and Dec) for the rasterized Milky Way density map -- SkyMap
+// draws one soft radial-gradient blob per surviving cell, so this trades shape fidelity against
+// per-frame draw-call count. Tuned against the real mw.json: 3.5 degrees keeps the total cell
+// count around 1400 (a wider band at lower zoom still reads clearly as a diagonal cloud, denser
+// toward the galactic center near Sagittarius) while staying well under ~2000, the point where a
+// gradient brush per cell starts costing real frame time. Stored in milkyway.bin's own header
+// rather than duplicated as a constant on the Kotlin side, so retuning it is a build-script-only
+// change -- see CatalogFormat.decodeMilkyWayCells.
+const MILKY_WAY_GRID_STEP_DEGREES = 3.5;
+
+// Point-in-polygon-with-holes via even-odd ray casting, summed (XOR'd) across every ring of a
+// level -- correctly treats a nested ring as a hole regardless of winding direction, and treats
+// multiple disjoint same-level rings (the Milky Way band splits into several unconnected loops
+// across the sky) as independent regions, neither of which a single-ring test could handle.
+//
+// Each edge is unwrapped locally around its own start vertex before the test: d3-celestial's RA
+// is signed (-180..180), and several real rings in mw.json legitimately cross that seam (it falls
+// in the Cygnus/Cassiopeia part of the band) -- a naive planar test would treat what's really a
+// 2-degree-wide edge crossing the seam as an ~358-degree-wide one and corrupt every crossing count
+// along its span.
+function unwrapNear(value, reference) {
+  let v = value;
+  while (v - reference > 180) v -= 360;
+  while (v - reference < -180) v += 360;
+  return v;
+}
+
+function pointInRing(px, py, ring) {
+  let inside = false;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const xi = ring[i][0], yi = ring[i][1];
+    const xj = unwrapNear(ring[j][0], xi), yj = ring[j][1];
+    const qx = unwrapNear(px, xi);
+    const crosses = (yi > py) !== (yj > py);
+    if (crosses && qx < (xj - xi) * (py - yi) / (yj - yi) + xi) inside = !inside;
+  }
+  return inside;
+}
+
+function pointInRings(px, py, rings) {
+  let inside = false;
+  for (const ring of rings) {
+    if (pointInRing(px, py, ring)) inside = !inside;
+  }
+  return inside;
+}
+
+async function buildMilkyWay() {
+  const text = await loadText(MILKY_WAY_URL, args.milkyway);
+  const geoJson = JSON.parse(text);
+
+  // mw.json holds 5 nested brightness contours ("ol1" = widest/faintest, through "ol5" =
+  // smallest/brightest, centered on the galactic core near Sagittarius) as MultiPolygons -- each
+  // "polygon" entry is really a bag of same-level rings (disjoint loops and/or holes), not one
+  // exterior ring per entry, so every ring across a whole feature is flattened into one list and
+  // tested together via pointInRings. Tested brightest-first since the contours nest: a point
+  // inside ol5 is definitely level 5 and the fainter levels don't need checking at all.
+  const levels = geoJson.features
+    .map((f) => ({
+      level: parseInt(f.id.replace('ol', ''), 10),
+      rings: f.geometry.coordinates.flat(1),
+    }))
+    .sort((a, b) => b.level - a.level);
+
+  const step = MILKY_WAY_GRID_STEP_DEGREES;
+  const cells = [];
+  for (let decDeg = -90 + step / 2; decDeg < 90; decDeg += step) {
+    for (let raDeg = -180 + step / 2; raDeg < 180; raDeg += step) {
+      for (const l of levels) {
+        if (pointInRings(raDeg, decDeg, l.rings)) {
+          cells.push({ raDeg, decDeg, level: l.level });
+          break;
+        }
+      }
+    }
+  }
+
+  const w = new BinaryWriter();
+  w.float32(step);
+  w.int32(cells.length);
+  for (const c of cells) {
+    w.float32(normalizeRaDegrees(c.raDeg) * DEG_TO_RAD);
+    w.float32(c.decDeg * DEG_TO_RAD);
+    w.uint8(c.level);
+  }
+  mkdirSync(OUT_DIR, { recursive: true });
+  writeFileSync(join(OUT_DIR, 'milkyway.bin'), w.toBuffer());
+
+  const countByLevel = new Map();
+  for (const c of cells) countByLevel.set(c.level, (countByLevel.get(c.level) ?? 0) + 1);
+  const levelCounts = [1, 2, 3, 4, 5].map((l) => `L${l}=${countByLevel.get(l) ?? 0}`).join(' ');
+  console.log(`milkyway.bin: ${cells.length} cells at ${step}deg grid (${levelCounts})`);
+}
+
 await buildStars();
 await buildDeepSky();
 await buildConstellationLines();
+await buildMilkyWay();

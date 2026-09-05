@@ -31,17 +31,19 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.dp
+import com.astrocompass.guiding.AlignmentStatus
 
 /** Connecting to a mount and setting up its alignment is useful on its own even while guiding
  *  stays phone-driven, so this entry is never gated on a live connection. */
 private const val SHOW_TELESCOPE_ENTRIES = true
 
 /** The app-wide destinations every bottom bar's menu offers, passed down from `App.kt` so no screen
- *  has to carry them as individual parameters. [isStarAligned] is a claim about the *phone's* star
- *  fit specifically -- not [com.astrocompass.guiding.PointingService.isAligned], which is also true
- *  under the compass fallback. */
+ *  has to carry them as individual parameters. [alignmentStatus] is a claim about the *phone's*
+ *  calibration specifically -- not [com.astrocompass.guiding.PointingService.isAligned], which is
+ *  also true under the compass fallback; see [AlignmentStatus]'s own doc comment for the three-way
+ *  distinction it draws. */
 data class AppMenuActions(
-    val isStarAligned: Boolean,
+    val alignmentStatus: AlignmentStatus,
     val onOpenAlignment: () -> Unit,
     val onOpenNightWizard: () -> Unit,
     val onOpenSettings: () -> Unit,
@@ -87,12 +89,14 @@ fun ToolbarDivider() {
 }
 
 /** Opens over the toolbar (Material anchors a [DropdownMenu] wherever it fits, which above a bottom
- *  bar means upward). Badged when the phone still needs calibrating: burying that state in a closed
- *  menu would otherwise lose the at-a-glance cue the toolbar used to carry. */
+ *  bar means upward). Badged only for [AlignmentStatus.NOT_CALIBRATED] -- burying *that* state in a
+ *  closed menu would otherwise lose the at-a-glance cue the toolbar used to carry.
+ *  [AlignmentStatus.AWAITING_FIRST_PLATE_SOLVE] deliberately gets no badge: nothing needs doing
+ *  there, it resolves itself once the first plate solve lands. */
 @Composable
 private fun AppMenuButton(menu: AppMenuActions) {
     var expanded by remember { mutableStateOf(false) }
-    val needsCalibration = !menu.isStarAligned
+    val needsCalibration = menu.alignmentStatus == AlignmentStatus.NOT_CALIBRATED
     Box {
         ToolbarActionButton(
             icon = Icons.Default.Menu,
@@ -105,7 +109,11 @@ private fun AppMenuButton(menu: AppMenuActions) {
             AppMenuItem(
                 icon = Icons.Default.Explore,
                 label = "Calibrate",
-                supportingText = if (menu.isStarAligned) "Calibrated" else "Not calibrated",
+                supportingText = when (menu.alignmentStatus) {
+                    AlignmentStatus.NOT_CALIBRATED -> "Not calibrated"
+                    AlignmentStatus.AWAITING_FIRST_PLATE_SOLVE -> "Awaiting first plate solve"
+                    AlignmentStatus.CALIBRATED -> "Calibrated"
+                },
                 onClick = { expanded = false; menu.onOpenAlignment() },
             )
             AppMenuItem(

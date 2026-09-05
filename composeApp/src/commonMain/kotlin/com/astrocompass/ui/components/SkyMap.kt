@@ -47,6 +47,7 @@ import com.astrocompass.catalog.SkyObjectType
 import com.astrocompass.catalog.SolarSystemObject
 import com.astrocompass.catalog.StarObject
 import com.astrocompass.catalog.objectImage
+import com.astrocompass.ui.skymap.MilkyWayCellDirection
 import com.astrocompass.ui.skymap.SkyMapDirectionCache
 import com.astrocompass.ui.skymap.SkyMapScene
 import com.astrocompass.ui.skymap.SkyMapViewport
@@ -223,6 +224,26 @@ private val GRATICULE_ALTITUDE_STEPS_DEGREES = listOf(30.0, 60.0)
 private val GRATICULE_AZIMUTH_STEP_DEGREES = 30.0
 private val GRATICULE_RADIAL_SAMPLE_COUNT = 18
 
+/** Multiplies [SkyMapSnapshot.milkyWayGridStepDegrees] to get each Milky Way cell's soft-edged
+ *  blob radius -- > 0.5 so a cell's blob overlaps its immediate neighbors (spaced exactly one grid
+ *  step apart) rather than just touching them, and comfortably covers the larger (sqrt(2)x)
+ *  diagonal-neighbor spacing too, so the whole grid reads as one continuous cloud with no visible
+ *  seams between cells. Expressed as a multiple of the *angular* grid step, not a fixed pixel size,
+ *  so this overlap ratio -- and therefore how smooth the cloud looks -- stays the same at every
+ *  zoom level: a cell's screen radius and its screen distance to its neighbors both scale by the
+ *  same pixelsPerUnit factor, so their ratio never changes. First-pass tuning value, not derived
+ *  from anything. */
+private const val MILKY_WAY_CELL_RADIUS_GRID_STEP_MULTIPLIER = 1.3f
+
+/** Peak alpha (at each blob's own center, fading to 0 at its edge, same technique as [drawStar]'s
+ *  halo) for a Milky Way cell, indexed by [MilkyWayCellDirection.level] - 1 (levels run 1..5, 1 =
+ *  the widest/faintest contour, 5 = the smallest/brightest one around the galactic core).
+ *  Individually very subtle -- a cloud silhouette, not a bold overlay -- since overlapping
+ *  neighbor cells (see [MILKY_WAY_CELL_RADIUS_GRID_STEP_MULTIPLIER]) compound through ordinary
+ *  alpha-over blending into a visibly denser cloud without any single blob standing out on its
+ *  own. First-pass tuning values, not derived from anything. */
+private val MILKY_WAY_LEVEL_ALPHA = floatArrayOf(0.035f, 0.05f, 0.07f, 0.10f, 0.15f)
+
 /**
  * A pannable/zoomable alt-az sky chart: catalog objects as dots/glyphs, an optional set of
  * [markers] for directions that aren't catalog objects, and tap-to-select. Screen-up is always
@@ -244,6 +265,11 @@ fun SkyMap(
     markers: List<SkyMapMarker> = emptyList(),
     guidancePath: SkyMapGuidancePath? = null,
     constellationLines: List<List<Vector3>> = emptyList(),
+    /** The Milky Way density grid, at the current sky rotation -- see [MilkyWayCellDirection] and
+     *  [drawMilkyWay]. [milkyWayGridStepDegrees] is [com.astrocompass.catalog.MilkyWayCatalog]'s
+     *  own fixed grid spacing, shared by every cell rather than carried per-cell. */
+    milkyWayCells: List<MilkyWayCellDirection> = emptyList(),
+    milkyWayGridStepDegrees: Float = 0f,
     /** ENU direction of "true equatorial north" for each object that has a bundled photo -- see
      *  [SkyMapDirectionCache.northOffsetDirections]'s doc comment for why this needs observer
      *  location/time despite each object's own orientation being fixed. Objects missing from this
@@ -406,6 +432,7 @@ fun SkyMap(
         fun isOnScreen(point: PlanePoint) =
             kotlin.math.abs(point.x) <= visibleHalfWidth && kotlin.math.abs(point.y) <= visibleHalfHeight
 
+        drawMilkyWay(milkyWayCells, milkyWayGridStepDegrees, projection, ::toScreen, starColor, pixelsPerUnit, maxPlaneX, maxPlaneY, belowHorizonAlpha)
         drawGraticule(projection, ::toScreen, graticuleColor, maxPlaneX, maxPlaneY)
         drawConstellationLines(constellationLines, projection, ::toScreen, constellationLineColor, maxPlaneX, maxPlaneY, belowHorizonAlpha)
         drawHorizon(projection, ::toScreen, horizonColor, maxPlaneX, maxPlaneY)
@@ -519,6 +546,47 @@ private fun DrawScope.drawGraticule(
         }
         drawDirectionPolyline(radial, projection, toScreen, color, strokeWidth = GRATICULE_STROKE_WIDTH, maxPlaneX, maxPlaneY, GRATICULE_DASH_EFFECT)
         azimuthDegrees += GRATICULE_AZIMUTH_STEP_DEGREES
+    }
+}
+
+/** The Milky Way's diffuse band, as one soft-edged radial-gradient blob per surviving density-grid
+ *  cell -- the same halo technique [drawStar] uses for a bright star's glow, here sized so
+ *  overlapping neighbor cells (see [MILKY_WAY_CELL_RADIUS_GRID_STEP_MULTIPLIER]) blend into one
+ *  continuous cloud instead of a field of visible dots. Drawn straight from ENU directions before
+ *  any other backdrop layer, same as [drawHorizon]/[drawGraticule]/[drawConstellationLines] --
+ *  everything drawn after it (the graticule, constellation lines, stars) paints over it, which is
+ *  the point: it's meant to read as a faint tint behind the chart, not a layer on top of it. */
+private fun DrawScope.drawMilkyWay(
+    cells: List<MilkyWayCellDirection>,
+    gridStepDegrees: Float,
+    projection: StereographicProjection,
+    toScreen: (PlanePoint) -> Offset,
+    color: Color,
+    pixelsPerUnit: Float,
+    maxPlaneX: Double,
+    maxPlaneY: Double,
+    belowHorizonAlpha: Float,
+) {
+    if (gridStepDegrees <= 0f) return
+    val radiusPlaneUnits = Angle.ofDegrees((gridStepDegrees * MILKY_WAY_CELL_RADIUS_GRID_STEP_MULTIPLIER).toDouble()).radians
+    val radiusPx = (radiusPlaneUnits * pixelsPerUnit).toFloat()
+    if (radiusPx <= 0f) return
+
+    for (cell in cells) {
+        val point = projection.project(cell.direction) ?: continue
+        if (point.x < -maxPlaneX || point.x > maxPlaneX || point.y < -maxPlaneY || point.y > maxPlaneY) continue
+        val peakAlpha = MILKY_WAY_LEVEL_ALPHA[(cell.level - 1).coerceIn(0, MILKY_WAY_LEVEL_ALPHA.lastIndex)]
+        val alpha = peakAlpha * cell.direction.horizonAlpha(belowHorizonAlpha)
+        val screenPoint = toScreen(point)
+        drawCircle(
+            brush = Brush.radialGradient(
+                colors = listOf(color.copy(alpha = color.alpha * alpha), color.copy(alpha = 0f)),
+                center = screenPoint,
+                radius = radiusPx,
+            ),
+            radius = radiusPx,
+            center = screenPoint,
+        )
     }
 }
 

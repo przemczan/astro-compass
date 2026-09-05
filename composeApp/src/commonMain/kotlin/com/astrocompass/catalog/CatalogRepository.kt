@@ -26,10 +26,15 @@ class CatalogRepository {
     var constellationLines: List<ConstellationLine> = emptyList()
         private set
 
+    /** The sky map's Milky Way cloud -- see [MilkyWayCatalog], `milkyway.bin`. */
+    var milkyWay: MilkyWayCatalog = MilkyWayCatalog(0f, emptyList())
+        private set
+
     suspend fun load() {
         val starBytes = Res.readBytes("files/stars.bin")
         val dsoBytes = Res.readBytes("files/dso.bin")
         val constellationBytes = Res.readBytes("files/constellations.bin")
+        val milkyWayBytes = Res.readBytes("files/milkyway.bin")
         // Decoding ~75k records (string allocations included) is real CPU work -- keep it off
         // the caller's dispatcher, which for AppContainer's startup launch is Dispatchers.Main.
         withContext(Dispatchers.Default) {
@@ -37,6 +42,7 @@ class CatalogRepository {
             val deepSkyObjects = CatalogFormat.decodeDeepSkyObjects(dsoBytes)
             all = solarSystemObjects + stars + deepSkyObjects
             constellationLines = CatalogFormat.decodeConstellationLines(constellationBytes)
+            milkyWay = CatalogFormat.decodeMilkyWayCatalog(milkyWayBytes)
         }
         _isLoaded.value = true
     }

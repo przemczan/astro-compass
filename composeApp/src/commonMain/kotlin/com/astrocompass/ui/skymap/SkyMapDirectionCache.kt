@@ -9,6 +9,8 @@ import com.astrocompass.astro.coords.Precession
 import com.astrocompass.astro.time.AstroTime
 import com.astrocompass.catalog.ConstellationLine
 import com.astrocompass.catalog.DeepSkyObject
+import com.astrocompass.catalog.MilkyWayCatalog
+import com.astrocompass.catalog.MilkyWayCell
 import com.astrocompass.catalog.SkyObject
 import com.astrocompass.catalog.SolarSystemObject
 import com.astrocompass.catalog.objectImage
@@ -18,6 +20,10 @@ import com.astrocompass.location.ObserverLocation
  *  at any zoom this map draws photos at, but large enough to stay well clear of float precision
  *  loss in the trig -- only its *direction* from the object matters, not its magnitude. */
 private val NORTH_OFFSET = Angle.ofDegrees(0.1)
+
+/** One [MilkyWayCell] rotated to its current ENU direction -- [level] rides along unchanged so the
+ *  draw layer can pick a blob alpha without a second lookup back into the catalog. */
+data class MilkyWayCellDirection(val level: Int, val direction: Vector3)
 
 /**
  * Builds the "where is everything right now" snapshot the sky map projects: one ENU unit vector
@@ -103,6 +109,21 @@ object SkyMapDirectionCache {
                 val nudged = EquatorialCoordinates(obj.j2000.rightAscension, obj.j2000.declination + NORTH_OFFSET)
                 obj.id to (j2000ToEnu * nudged.toUnitVector())
             }
+    }
+
+    /** Same rotation as [build] applied to the Milky Way density grid's cell centers -- kept
+     *  separate for the same reason [buildConstellationDirections] is: a [MilkyWayCell] isn't a
+     *  [SkyObject] either, there's nothing to select about a patch of diffuse cloud. */
+    fun buildMilkyWayDirections(
+        catalog: MilkyWayCatalog,
+        location: ObserverLocation,
+        nowEpochMillis: Long,
+    ): List<MilkyWayCellDirection> {
+        val julianDay = AstroTime.julianDay(nowEpochMillis)
+        val julianCenturies = AstroTime.julianCenturiesJ2000(julianDay)
+        val j2000ToEnu = enuMatrixFor(location, julianDay) * Precession.rotationJ2000ToDate(julianCenturies)
+
+        return catalog.cells.map { cell -> MilkyWayCellDirection(cell.level, j2000ToEnu * cell.position.toUnitVector()) }
     }
 
     private fun enuMatrixFor(location: ObserverLocation, julianDay: Double): Matrix3 {

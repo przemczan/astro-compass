@@ -58,8 +58,8 @@ import com.astrocompass.catalog.MapObjectFilter
 import com.astrocompass.catalog.SkyObject
 import com.astrocompass.catalog.searchDisplayLabel
 import com.astrocompass.guiding.AbsoluteReferenceState
+import com.astrocompass.guiding.AlignmentStatus
 import com.astrocompass.guiding.GuidanceCalculator
-import com.astrocompass.guiding.ReferenceOrigin
 import com.astrocompass.guiding.SkyPointingSource
 import com.astrocompass.guiding.currentHorizontal
 import com.astrocompass.location.ObserverLocation
@@ -375,6 +375,8 @@ fun GuidanceScreen(
                 onViewportChange = { mapViewport = it },
                 onManualInteraction = { followPointing = false },
                 constellationLines = snapshot.constellationLines,
+                milkyWayCells = snapshot.milkyWayCells,
+                milkyWayGridStepDegrees = snapshot.milkyWayGridStepDegrees,
                 northOffsetDirections = snapshot.northOffsetDirections,
                 showObjectPhotos = showObjectPhotos,
                 dimBelowHorizon = dimBelowHorizon,
@@ -406,7 +408,7 @@ fun GuidanceScreen(
             )
 
             ReferenceStatusSection(
-                reference = activeReference,
+                alignmentStatus = menu.alignmentStatus,
                 modifier = Modifier.align(Alignment.TopStart)
                     .padding(8.dp)
                     .mapOverlayScrim()
@@ -549,28 +551,41 @@ private fun TelescopeActionRow(
     }
 }
 
-/** How the phone's own alignment was obtained. Renders nothing once a real fit is in effect: only
- *  the compass fallback warrants a permanent overlay saying the whole solution is provisional. */
+/** How the phone's own alignment stands. Renders nothing once a real fit is in effect: only the
+ *  compass fallback warrants a permanent overlay saying the whole solution is provisional -- and
+ *  even then, [AlignmentStatus.AWAITING_FIRST_PLATE_SOLVE] gets different wording from
+ *  [AlignmentStatus.NOT_CALIBRATED], since only one of them actually needs the user to do
+ *  anything. */
 @Composable
 private fun ReferenceStatusSection(
-    reference: AbsoluteReferenceState?,
+    alignmentStatus: AlignmentStatus,
     modifier: Modifier = Modifier,
 ) {
-    when (reference?.origin) {
-        ReferenceOrigin.STAR_ALIGNMENT -> {}
-        ReferenceOrigin.COMPASS, null -> Column(modifier.fillMaxWidth()) { CompassModeText() }
+    when (alignmentStatus) {
+        AlignmentStatus.CALIBRATED -> {}
+        AlignmentStatus.NOT_CALIBRATED -> Column(modifier.fillMaxWidth()) { CompassModeText(awaitingPlateSolve = false) }
+        AlignmentStatus.AWAITING_FIRST_PLATE_SOLVE -> Column(modifier.fillMaxWidth()) { CompassModeText(awaitingPlateSolve = true) }
     }
 }
 
 /** No error figure quoted: the compass fallback's yaw error varies wildly with how much steel is
  *  near the phone, and it corrects no mounting offset at all, so any number would read as a bound
- *  it cannot honour. See [com.astrocompass.alignment.CompassAlignment]. */
+ *  it cannot honour. See [com.astrocompass.alignment.CompassAlignment].
+ *
+ *  [awaitingPlateSolve] swaps the second line: a camera setup with no live fix yet is already
+ *  calibrated and just waiting on its background solver (see
+ *  [com.astrocompass.guiding.AutoPlateSolveRefiner]), so telling it to "calibrate for real
+ *  accuracy" would send the user to redo a setup they'd already finished. */
 @Composable
-private fun CompassModeText() {
+private fun CompassModeText(awaitingPlateSolve: Boolean) {
     Column {
         Text("Rough — compass only", color = WarningAmber, style = MaterialTheme.typography.bodyMedium)
         Text(
-            "Calibrate for real accuracy.",
+            if (awaitingPlateSolve) {
+                "Camera calibrated — hold the scope still for the first plate solve."
+            } else {
+                "Calibrate for real accuracy."
+            },
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             style = MaterialTheme.typography.bodySmall,
         )

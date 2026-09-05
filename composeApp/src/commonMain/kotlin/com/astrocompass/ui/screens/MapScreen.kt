@@ -41,6 +41,7 @@ import com.astrocompass.astro.time.currentEpochMillis
 import com.astrocompass.catalog.CatalogRepository
 import com.astrocompass.catalog.MapObjectFilter
 import com.astrocompass.catalog.SkyObject
+import com.astrocompass.guiding.AlignmentStatus
 import com.astrocompass.guiding.SkyPointingSource
 import com.astrocompass.guiding.currentHorizontal
 import com.astrocompass.location.ObserverLocation
@@ -162,6 +163,8 @@ fun MapScreen(
                     onViewportChange = onViewportChange,
                     onManualInteraction = { followPointing = false },
                     constellationLines = snapshot.constellationLines,
+                    milkyWayCells = snapshot.milkyWayCells,
+                    milkyWayGridStepDegrees = snapshot.milkyWayGridStepDegrees,
                     northOffsetDirections = snapshot.northOffsetDirections,
                     showObjectPhotos = showObjectPhotos,
                     dimBelowHorizon = dimBelowHorizon,
@@ -194,12 +197,16 @@ fun MapScreen(
                     onOpenFilter = { showFilterSheet = true },
                     modifier = Modifier.align(Alignment.TopEnd).padding(top = 8.dp, end = 8.dp),
                 )
-                if (!menu.isStarAligned) {
-                    NotCalibratedBanner(
+                // End padding (both banners) clears the control cluster sharing this corner of the map.
+                when (menu.alignmentStatus) {
+                    AlignmentStatus.NOT_CALIBRATED -> NotCalibratedBanner(
                         onCalibrate = menu.onOpenAlignment,
-                        // End padding clears the control cluster sharing this corner of the map.
                         modifier = Modifier.align(Alignment.TopStart).padding(top = 8.dp, start = 8.dp, end = 64.dp),
                     )
+                    AlignmentStatus.AWAITING_FIRST_PLATE_SOLVE -> AwaitingPlateSolveBanner(
+                        modifier = Modifier.align(Alignment.TopStart).padding(top = 8.dp, start = 8.dp, end = 64.dp),
+                    )
+                    AlignmentStatus.CALIBRATED -> {}
                 }
                 if (selectedTarget != null) {
                     Row(
@@ -222,9 +229,11 @@ fun MapScreen(
     }
 }
 
-/** Shown on the map until a real calibration exists. Deliberately a nudge and not a wall: pointing
- *  still works off the compass fallback (see [com.astrocompass.alignment.CompassAlignment]), it is
- *  just rough -- which the menu's own badge alone was too easy to miss. */
+/** Shown for [AlignmentStatus.NOT_CALIBRATED] -- no real calibration exists yet. Deliberately a
+ *  nudge and not a wall: pointing still works off the compass fallback (see
+ *  [com.astrocompass.alignment.CompassAlignment]), it is just rough -- which the menu's own badge
+ *  alone was too easy to miss. See [AwaitingPlateSolveBanner] for the sibling state where a
+ *  calibration *does* exist but hasn't produced a live fix yet. */
 @Composable
 private fun NotCalibratedBanner(onCalibrate: () -> Unit, modifier: Modifier = Modifier) {
     Row(
@@ -241,6 +250,36 @@ private fun NotCalibratedBanner(onCalibrate: () -> Unit, modifier: Modifier = Mo
             Text("Not calibrated", color = WarningAmber, style = MaterialTheme.typography.bodyMedium)
             Text(
                 "Pointing is rough — tap to calibrate.",
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                style = MaterialTheme.typography.bodySmall,
+            )
+        }
+    }
+}
+
+/** Shown for [AlignmentStatus.AWAITING_FIRST_PLATE_SOLVE] -- a camera setup is fully calibrated,
+ *  but its background solver (see [com.astrocompass.guiding.AutoPlateSolveRefiner]) hasn't landed
+ *  a fix yet this run, so pointing is still running off the compass fallback underneath it.
+ *  Deliberately not clickable, unlike [NotCalibratedBanner]: there is nothing for the user to do
+ *  here, it resolves itself once the telescope holds still long enough for one solve (which only
+ *  happens once Guidance is open for some target -- the background solver doesn't run on this
+ *  screen). */
+@Composable
+private fun AwaitingPlateSolveBanner(modifier: Modifier = Modifier) {
+    Row(
+        modifier.mapOverlayScrim().padding(horizontal = 12.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(
+            Icons.Default.Explore,
+            contentDescription = null,
+            tint = WarningAmber,
+            modifier = Modifier.padding(end = 8.dp),
+        )
+        Column {
+            Text("Camera calibrated", color = WarningAmber, style = MaterialTheme.typography.bodyMedium)
+            Text(
+                "Pointing is rough until the first plate solve, in Guidance.",
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 style = MaterialTheme.typography.bodySmall,
             )

@@ -13,7 +13,7 @@ import com.astrocompass.alignment.AlignmentType
 import com.astrocompass.astro.time.currentEpochMillis
 import com.astrocompass.catalog.SearchCategory
 import com.astrocompass.catalog.SkyObject
-import com.astrocompass.guiding.ReferenceOrigin
+import com.astrocompass.guiding.alignmentStatus
 import com.astrocompass.guiding.currentHorizontal
 import com.astrocompass.ui.BackHandler
 import com.astrocompass.ui.components.AppMenuActions
@@ -90,7 +90,6 @@ fun GuiderApp(container: AppContainer, onExitApp: () -> Unit = {}) {
         // Distinct from PointingService.isAligned, which is also true under the compass fallback --
         // MapScreen's "Aligned" button specifically means a real star alignment, not a rough guess.
         val absoluteReferenceState by container.absoluteReference.current.collectAsState()
-        val isStarAligned = absoluteReferenceState?.origin == ReferenceOrigin.STAR_ALIGNMENT
         val telescopeConnectionState by container.telescopeConnection.state.collectAsState()
         val isTelescopeConnected = telescopeConnectionState is TelescopeConnectionState.Connected
         val telescopeDirection by container.telescopeSkyDirection.collectAsState()
@@ -101,6 +100,9 @@ fun GuiderApp(container: AppContainer, onExitApp: () -> Unit = {}) {
         val alignmentType by container.preferences.alignmentType.collectAsState()
         val alignmentCompletedAt by container.preferences.alignmentCompletedAtEpochMillis.collectAsState()
         val lastAlignment = alignmentType?.let { type -> alignmentCompletedAt?.let { type to it } }
+        // See AlignmentStatus's own doc comment for why this needs both alignmentType and the live
+        // reference's origin, not just one or the other.
+        val alignmentStatus = alignmentStatus(alignmentType, absoluteReferenceState?.origin)
 
         val location = resolvedLocation
 
@@ -175,7 +177,7 @@ fun GuiderApp(container: AppContainer, onExitApp: () -> Unit = {}) {
         // The app-wide destinations every bottom bar's hamburger menu offers -- one value passed to
         // each screen rather than a handful of callbacks repeated per screen.
         val menuActions = AppMenuActions(
-            isStarAligned = isStarAligned,
+            alignmentStatus = alignmentStatus,
             onOpenAlignment = { isGuiding = false; showAlignment = true },
             onOpenNightWizard = { showNightWizardOptions = true },
             onOpenSettings = { showSettings = true },

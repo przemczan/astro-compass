@@ -11,8 +11,10 @@ import com.astrocompass.astro.Vector3
 import com.astrocompass.astro.time.currentEpochMillis
 import com.astrocompass.catalog.CatalogRepository
 import com.astrocompass.catalog.DeepSkyObject
+import com.astrocompass.catalog.MilkyWayCatalog
 import com.astrocompass.catalog.SkyObject
 import com.astrocompass.location.ObserverLocation
+import com.astrocompass.ui.skymap.MilkyWayCellDirection
 import com.astrocompass.ui.skymap.SkyMapDirectionCache
 import kotlinx.coroutines.delay
 
@@ -23,8 +25,10 @@ import kotlinx.coroutines.delay
 private const val DEFAULT_SNAPSHOT_REFRESH_INTERVAL_MILLIS = 5_000L
 
 /** The "where's everything right now" data [SkyMap] needs: directions for every catalog object
- *  [catalogFilter] admits, the constellation stick figures, and (for whichever [DeepSkyObject]s
- *  survived the filter) north-offset directions a bundled photo needs to rotate correctly.
+ *  [catalogFilter] admits, the constellation stick figures, the Milky Way density grid, and (for
+ *  whichever [DeepSkyObject]s survived the filter) north-offset directions a bundled photo needs
+ *  to rotate correctly. [milkyWayGridStepDegrees] rides alongside [milkyWayCells] rather than in
+ *  it -- it's the same fixed value for every cell (see [MilkyWayCatalog]), not a per-cell one.
  *  [nowEpochMillis] is exposed too, so a caller that only needs a marker's *current* position (not
  *  sub-second precision -- if it does, e.g. Guidance's live arrow, it should keep its own faster
  *  ticker instead) can position it off this same snapshot rather than running a second ticker. */
@@ -32,6 +36,8 @@ data class SkyMapSnapshot(
     val directions: List<Pair<SkyObject, Vector3>>,
     val constellationLines: List<List<Vector3>>,
     val northOffsetDirections: Map<String, Vector3>,
+    val milkyWayCells: List<MilkyWayCellDirection>,
+    val milkyWayGridStepDegrees: Float,
     val nowEpochMillis: Long,
 )
 
@@ -92,6 +98,16 @@ fun rememberSkyMapSnapshot(
     val northOffsetDirections = remember(catalogSubset, now) {
         SkyMapDirectionCache.northOffsetDirections(catalogSubset.filterIsInstance<DeepSkyObject>(), location, now)
     }
+    val milkyWayCells = remember(catalogLoaded, now) {
+        if (catalogLoaded) {
+            SkyMapDirectionCache.buildMilkyWayDirections(catalogRepository.milkyWay, location, now)
+        } else {
+            emptyList()
+        }
+    }
 
-    return SkyMapSnapshot(directions, constellationLines, northOffsetDirections, now)
+    return SkyMapSnapshot(
+        directions, constellationLines, northOffsetDirections,
+        milkyWayCells, catalogRepository.milkyWay.gridStepDegrees, now,
+    )
 }
