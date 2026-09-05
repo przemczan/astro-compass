@@ -7,7 +7,7 @@ import com.astrocompass.astro.coords.EquatorialCoordinates
 import com.astrocompass.catalog.CatalogFormat
 import kotlin.math.pow
 import kotlin.test.Test
-import kotlin.test.assertNotNull
+import kotlin.test.assertIs
 import kotlin.test.assertTrue
 
 /**
@@ -74,7 +74,7 @@ class PlateSolverCatalogDensityTest {
             StarCentroid(px, py, brightness = 100.0 * 10.0.pow(-0.4 * star.magnitude))
         }
 
-        val result = PlateSolver.solve(
+        val outcome = PlateSolver.solve(
             detections = detections,
             intrinsics = intrinsics,
             seedBoresight = tangent,
@@ -82,10 +82,10 @@ class PlateSolverCatalogDensityTest {
             referenceStars = referenceStars,
         )
 
-        assertNotNull(
-            result,
+        assertIs<PlateSolverOutcome.Solved>(
+            outcome,
             "Bundled stars.bin (named/Bayer/Flamsteed only, ${referenceStars.size} stars) was NOT dense enough to " +
-                "solve a ${detections.size}-star synthetic field -- add a denser solver-specific catalog per the plan.",
+                "solve a ${detections.size}-star synthetic field ($outcome) -- add a denser solver-specific catalog per the plan.",
         )
     }
 }

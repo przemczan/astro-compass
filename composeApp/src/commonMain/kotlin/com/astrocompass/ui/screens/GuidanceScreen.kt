@@ -62,6 +62,8 @@ import com.astrocompass.catalog.searchDisplayLabel
 import com.astrocompass.guiding.AbsoluteReferenceState
 import com.astrocompass.guiding.AlignmentStatus
 import com.astrocompass.guiding.GuidanceCalculator
+import com.astrocompass.guiding.PlateSolveOutcome
+import com.astrocompass.guiding.PlateSolveStatus
 import com.astrocompass.guiding.SkyPointingSource
 import com.astrocompass.guiding.currentHorizontal
 import com.astrocompass.location.ObserverLocation
@@ -79,6 +81,7 @@ import com.astrocompass.ui.components.MAP_ZOOM_STEP_FACTOR
 import com.astrocompass.ui.components.MapFilterSheet
 import com.astrocompass.ui.components.MapFollowMode
 import com.astrocompass.ui.components.MapFollowZoomControls
+import com.astrocompass.ui.components.PlateSolveStatusIndicator
 import com.astrocompass.ui.components.ToolbarCancelButton
 import com.astrocompass.ui.components.mapOverlayScrim
 import com.astrocompass.ui.components.SkyMap
@@ -125,6 +128,12 @@ fun GuidanceScreen(
     /** Runs the background solve loop for as long as this screen is up -- a no-op unless the setup
      *  was aligned with a camera (see [com.astrocompass.AppContainer.setAutoPlateSolveActive]). */
     onAutoPlateSolveActive: (Boolean) -> Unit,
+    /** Null under [com.astrocompass.alignment.AlignmentType.SENSORS_ONLY], where there is no
+     *  background solver at all -- the app bar shows no indicator rather than one stuck grey
+     *  forever. Non-null under [com.astrocompass.alignment.AlignmentType.PLATE_SOLVE]; see
+     *  [com.astrocompass.AppContainer.plateSolveStatus]/[com.astrocompass.AppContainer.plateSolveLastOutcome]. */
+    plateSolveStatus: StateFlow<PlateSolveStatus>?,
+    plateSolveLastOutcome: StateFlow<PlateSolveOutcome?>?,
     menu: AppMenuActions,
     onOpenSearch: () -> Unit,
     onExitGuiding: () -> Unit,
@@ -315,6 +324,15 @@ fun GuidanceScreen(
                         IconButton(onClick = onBackToObjectList) {
                             Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back to the object list")
                         }
+                    }
+                },
+                actions = {
+                    // Paired: non-null only under AlignmentType.PLATE_SOLVE, see this screen's own
+                    // parameter doc.
+                    if (plateSolveStatus != null && plateSolveLastOutcome != null) {
+                        val status by plateSolveStatus.collectAsState()
+                        val lastOutcome by plateSolveLastOutcome.collectAsState()
+                        PlateSolveStatusIndicator(status, lastOutcome)
                     }
                 },
             )

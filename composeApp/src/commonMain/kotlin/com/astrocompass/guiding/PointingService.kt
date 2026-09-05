@@ -15,19 +15,26 @@ import kotlinx.coroutines.flow.stateIn
  * both a sensor reading and an alignment exist -- there is no meaningful pointing direction
  * before the first sync, and the Guidance screen relies on that to show "not aligned" rather
  * than a meaningless arrow.
+ *
+ * [boresightDeviceVector] is where the telescope's optical axis actually points, in device/IMU
+ * frame -- [TelescopeAxis.deviceVector]'s coarse choice for most setups, or the finer
+ * camera-crosshair-calibrated direction once a plate-solve setup has captured a frame; see
+ * [com.astrocompass.AppContainer.effectiveTelescopeDirection], this class's only real caller of
+ * that distinction. Plain [Vector3] rather than [TelescopeAxis] so this class doesn't need to
+ * know that distinction exists.
  */
 class PointingService(
     scope: CoroutineScope,
     orientationSensor: OrientationSensor,
     absoluteReference: AbsoluteReference,
-    telescopeAxis: StateFlow<TelescopeAxis>,
+    boresightDeviceVector: StateFlow<Vector3>,
 ) : SkyPointingSource {
     override val currentSkyDirection: StateFlow<Vector3?> =
-        combine(orientationSensor.orientation, absoluteReference.current, telescopeAxis) { orientation, reference, axis ->
+        combine(orientationSensor.orientation, absoluteReference.current, boresightDeviceVector) { orientation, reference, boresight ->
             if (orientation == null || reference == null) {
                 null
             } else {
-                reference.sensorToSky.rotate(orientation.deviceToWorld.rotate(axis.deviceVector))
+                reference.sensorToSky.rotate(orientation.deviceToWorld.rotate(boresight))
             }
         }.stateIn(scope, SharingStarted.Eagerly, null)
 

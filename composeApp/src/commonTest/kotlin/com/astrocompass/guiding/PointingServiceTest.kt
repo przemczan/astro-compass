@@ -28,7 +28,7 @@ class PointingServiceTest {
     fun beforeAnySyncOrReading_currentSkyDirectionIsNull_andNotAligned() = runTest {
         val sensor = FakeOrientationSensor()
         val reference = AlignmentAbsoluteReference()
-        val service = PointingService(backgroundScope, sensor, reference, MutableStateFlow(TelescopeAxis.TOP_EDGE))
+        val service = PointingService(backgroundScope, sensor, reference, MutableStateFlow(TelescopeAxis.TOP_EDGE.deviceVector))
         runCurrent()
 
         assertNull(service.currentSkyDirection.value)
@@ -39,7 +39,7 @@ class PointingServiceTest {
     fun afterSyncAndReading_currentSkyDirectionIsTheRotatedTelescopeAxis() = runTest {
         val sensor = FakeOrientationSensor()
         val reference = AlignmentAbsoluteReference()
-        val service = PointingService(backgroundScope, sensor, reference, MutableStateFlow(TelescopeAxis.TOP_EDGE))
+        val service = PointingService(backgroundScope, sensor, reference, MutableStateFlow(TelescopeAxis.TOP_EDGE.deviceVector))
 
         reference.update(identityModel)
         sensor.emit(Quaternion.IDENTITY, timestampMillis = 0L)

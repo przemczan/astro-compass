@@ -6,6 +6,7 @@ import com.astrocompass.alignment.AlignmentModel
 import com.astrocompass.astro.Angle
 import com.astrocompass.astro.Quaternion
 import com.astrocompass.astro.coords.EquatorialCoordinates
+import com.astrocompass.platesolve.PlateSolveFailureReason
 import com.astrocompass.platesolve.PlateSolveResult
 import com.astrocompass.sensors.FakeOrientationSensor
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -13,6 +14,7 @@ import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertIs
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 
@@ -22,21 +24,25 @@ private const val ENOUGH_FOR_SEVERAL_CYCLES_MILLIS = 30_000L
 
 class AutoPlateSolveRefinerTest {
 
-    private fun attempt(correctionDegrees: Double, rmsResidualDegrees: Double = 0.2) = PlateSolveAttempt(
-        result = PlateSolveResult(
-            centerEquatorial = EquatorialCoordinates(Angle.ofDegrees(0.0), Angle.ofDegrees(0.0)),
-            matchedStarCount = 8,
-            rmsResidualDegrees = rmsResidualDegrees,
-            matchedStars = emptyList(),
+    private fun attempt(correctionDegrees: Double, rmsResidualDegrees: Double = 0.2) = PlateSolveOutcome.Success(
+        PlateSolveAttempt(
+            result = PlateSolveResult(
+                centerEquatorial = EquatorialCoordinates(Angle.ofDegrees(0.0), Angle.ofDegrees(0.0)),
+                matchedStarCount = 8,
+                rmsResidualDegrees = rmsResidualDegrees,
+                matchedStars = emptyList(),
+            ),
+            correctedModel = AlignmentModel(
+                sensorToSky = Quaternion.IDENTITY,
+                points = emptyList(),
+                rmsResidualDegrees = rmsResidualDegrees,
+                computedAtEpochMillis = 1_000L,
+            ),
+            correctionDegrees = correctionDegrees,
         ),
-        correctedModel = AlignmentModel(
-            sensorToSky = Quaternion.IDENTITY,
-            points = emptyList(),
-            rmsResidualDegrees = rmsResidualDegrees,
-            computedAtEpochMillis = 1_000L,
-        ),
-        correctionDegrees = correctionDegrees,
     )
+
+    private val failure = PlateSolveOutcome.Failure(PlateSolveFailureReason.TOO_FEW_DETECTIONS)
 
     /** A sensor held perfectly still, which is what the loop waits for before each solve. */
     private fun stillSensor() = FakeOrientationSensor().apply { emit(Quaternion.IDENTITY, 0L) }
@@ -47,7 +53,7 @@ class AutoPlateSolveRefinerTest {
         val refiner = AutoPlateSolveRefiner(
             scope = backgroundScope,
             orientationSensor = stillSensor(),
-            telescopeAxis = MutableStateFlow(TelescopeAxis.DEFAULT),
+            boresightDeviceVector = MutableStateFlow(TelescopeAxis.DEFAULT.deviceVector),
             attemptSolve = { attempt(correctionDegrees = 2.0) },
             onFirstSuccess = { firstSuccesses += it },
             nowEpochMillis = { testScheduler.currentTime },
@@ -64,16 +70,37 @@ class AutoPlateSolveRefinerTest {
         assertEquals(1, firstSuccesses.size)
     }
 
-    /** No user is reviewing these, so an implausibly large correction -- a false match, or the
-     *  wrong camera-mounting preset -- has to be dropped by the refiner itself. */
+    /** An honest compass-seeded first solve routinely implies a correction of this size --
+     *  magnetometer error near a telescope's own steel/motors is ordinary, not a sign of a false
+     *  match -- so it must be accepted, not just a small "drift" correction. */
+    @Test
+    fun aLargeButPlausibleFirstCorrection_isStillAccepted() = runTest {
+        val refiner = AutoPlateSolveRefiner(
+            scope = backgroundScope,
+            orientationSensor = stillSensor(),
+            boresightDeviceVector = MutableStateFlow(TelescopeAxis.DEFAULT.deviceVector),
+            attemptSolve = { attempt(correctionDegrees = 30.0) },
+            nowEpochMillis = { testScheduler.currentTime },
+        )
+
+        refiner.setActive(true)
+        advanceTimeBy(ENOUGH_FOR_SEVERAL_CYCLES_MILLIS)
+        refiner.setActive(false)
+
+        assertNotNull(refiner.current.value)
+        assertEquals(PlateSolveStatus.SUCCEEDED, refiner.status.value)
+    }
+
+    /** No user is reviewing these, so an implausibly large correction -- a false match that
+     *  happened to pass its own inlier check -- has to be dropped by the refiner itself. */
     @Test
     fun anImplausiblyLargeCorrection_isRejected() = runTest {
         var persisted = 0
         val refiner = AutoPlateSolveRefiner(
             scope = backgroundScope,
             orientationSensor = stillSensor(),
-            telescopeAxis = MutableStateFlow(TelescopeAxis.DEFAULT),
-            attemptSolve = { attempt(correctionDegrees = 40.0) },
+            boresightDeviceVector = MutableStateFlow(TelescopeAxis.DEFAULT.deviceVector),
+            attemptSolve = { attempt(correctionDegrees = 90.0) },
             onFirstSuccess = { persisted++ },
             nowEpochMillis = { testScheduler.currentTime },
         )
@@ -91,8 +118,8 @@ class AutoPlateSolveRefinerTest {
         val refiner = AutoPlateSolveRefiner(
             scope = backgroundScope,
             orientationSensor = stillSensor(),
-            telescopeAxis = MutableStateFlow(TelescopeAxis.DEFAULT),
-            attemptSolve = { null },
+            boresightDeviceVector = MutableStateFlow(TelescopeAxis.DEFAULT.deviceVector),
+            attemptSolve = { failure },
             nowEpochMillis = { testScheduler.currentTime },
         )
 
@@ -103,6 +130,47 @@ class AutoPlateSolveRefinerTest {
         assertNull(refiner.current.value)
     }
 
+    @Test
+    fun statusAndLastOutcome_trackTheMostRecentAttempt() = runTest {
+        val refiner = AutoPlateSolveRefiner(
+            scope = backgroundScope,
+            orientationSensor = stillSensor(),
+            boresightDeviceVector = MutableStateFlow(TelescopeAxis.DEFAULT.deviceVector),
+            attemptSolve = { failure },
+            nowEpochMillis = { testScheduler.currentTime },
+        )
+
+        assertEquals(PlateSolveStatus.IDLE, refiner.status.value)
+
+        refiner.setActive(true)
+        advanceTimeBy(ENOUGH_FOR_SEVERAL_CYCLES_MILLIS)
+        refiner.setActive(false)
+
+        assertEquals(PlateSolveStatus.FAILED, refiner.status.value)
+        val outcome = assertIs<PlateSolveOutcome.Failure>(refiner.lastOutcome.value)
+        assertEquals(PlateSolveFailureReason.TOO_FEW_DETECTIONS, outcome.reason)
+    }
+
+    @Test
+    fun aRejectedLargeCorrection_reportsFailedWithTheCorrectionItself() = runTest {
+        val refiner = AutoPlateSolveRefiner(
+            scope = backgroundScope,
+            orientationSensor = stillSensor(),
+            boresightDeviceVector = MutableStateFlow(TelescopeAxis.DEFAULT.deviceVector),
+            attemptSolve = { attempt(correctionDegrees = 90.0) },
+            nowEpochMillis = { testScheduler.currentTime },
+        )
+
+        refiner.setActive(true)
+        advanceTimeBy(ENOUGH_FOR_SEVERAL_CYCLES_MILLIS)
+        refiner.setActive(false)
+
+        assertEquals(PlateSolveStatus.FAILED, refiner.status.value)
+        val outcome = assertIs<PlateSolveOutcome.Failure>(refiner.lastOutcome.value)
+        assertEquals(PlateSolveFailureReason.CORRECTION_TOO_LARGE, outcome.reason)
+        assertEquals(90.0, outcome.correctionDegrees)
+    }
+
     /** The fit stays true after the user leaves the guidance screen; clearing it would drop every
      *  map back to the compass for no reason. */
     @Test
@@ -110,7 +178,7 @@ class AutoPlateSolveRefinerTest {
         val refiner = AutoPlateSolveRefiner(
             scope = backgroundScope,
             orientationSensor = stillSensor(),
-            telescopeAxis = MutableStateFlow(TelescopeAxis.DEFAULT),
+            boresightDeviceVector = MutableStateFlow(TelescopeAxis.DEFAULT.deviceVector),
             attemptSolve = { attempt(correctionDegrees = 1.0) },
             nowEpochMillis = { testScheduler.currentTime },
         )
@@ -131,7 +199,7 @@ class AutoPlateSolveRefinerTest {
         val refiner = AutoPlateSolveRefiner(
             scope = backgroundScope,
             orientationSensor = FakeOrientationSensor(),
-            telescopeAxis = MutableStateFlow(TelescopeAxis.DEFAULT),
+            boresightDeviceVector = MutableStateFlow(TelescopeAxis.DEFAULT.deviceVector),
             attemptSolve = { solves++; attempt(correctionDegrees = 1.0) },
             nowEpochMillis = { testScheduler.currentTime },
         )

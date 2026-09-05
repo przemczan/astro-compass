@@ -5,12 +5,15 @@ package com.astrocompass.ui.screens
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.LocalCafe
 import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
@@ -198,7 +201,11 @@ private fun TelescopeAxisSection(preferences: AppPreferences) {
     val current by preferences.telescopeAxis.collectAsState()
     var expanded by remember { mutableStateOf(false) }
     Row {
-        OutlinedButton(onClick = { expanded = true }) { Text(current.label) }
+        OutlinedButton(onClick = { expanded = true }) {
+            Text(current.label)
+            Spacer(Modifier.width(4.dp))
+            Icon(Icons.Default.ArrowDropDown, contentDescription = null)
+        }
         DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
             TelescopeAxis.entries.forEach { axis ->
                 DropdownMenuItem(
@@ -295,7 +302,11 @@ private fun AdvancedSection(preferences: AppPreferences, orientationSensor: Orie
 
     var expanded by remember { mutableStateOf(false) }
     Row {
-        OutlinedButton(onClick = { expanded = true }) { Text(override?.name ?: "Auto (recommended)") }
+        OutlinedButton(onClick = { expanded = true }) {
+            Text(override?.name ?: "Auto (recommended)")
+            Spacer(Modifier.width(4.dp))
+            Icon(Icons.Default.ArrowDropDown, contentDescription = null)
+        }
         DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
             DropdownMenuItem(text = { Text("Auto (recommended)") }, onClick = { preferences.setSensorSourceOverride(null); expanded = false })
             SensorSource.entries.forEach { source ->
@@ -320,7 +331,11 @@ private fun AdvancedSection(preferences: AppPreferences, orientationSensor: Orie
     val mounting by preferences.cameraMounting.collectAsState()
     var mountingExpanded by remember { mutableStateOf(false) }
     Row {
-        OutlinedButton(onClick = { mountingExpanded = true }) { Text(mounting.label) }
+        OutlinedButton(onClick = { mountingExpanded = true }) {
+            Text(mounting.label)
+            Spacer(Modifier.width(4.dp))
+            Icon(Icons.Default.ArrowDropDown, contentDescription = null)
+        }
         DropdownMenu(expanded = mountingExpanded, onDismissRequest = { mountingExpanded = false }) {
             CameraMounting.entries.forEach { option ->
                 DropdownMenuItem(
@@ -482,7 +497,11 @@ private fun UpdatesSection(appUpdater: AppUpdater) {
         )
         var pickerExpanded by remember { mutableStateOf(false) }
         Row {
-            OutlinedButton(onClick = { pickerExpanded = true }) { Text(selectedVersion ?: "Choose a version") }
+            OutlinedButton(onClick = { pickerExpanded = true }) {
+                Text(selectedVersion ?: "Choose a version")
+                Spacer(Modifier.width(4.dp))
+                Icon(Icons.Default.ArrowDropDown, contentDescription = null)
+            }
             DropdownMenu(expanded = pickerExpanded, onDismissRequest = { pickerExpanded = false }) {
                 allReleases.forEach { release ->
                     val isCurrent = release.version.removePrefix("v") == currentVersion.removePrefix("v")

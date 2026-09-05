@@ -215,14 +215,57 @@ pointing stays smooth off the sensors between solves and silently re-truths itse
 - **Nothing is persisted per solve.** Only the first success writes through `saveAlignment`, for a
   warm start next launch; every later one lives in the flow alone. Deactivating keeps the last
   published value — the fit is still true after leaving guidance.
-- **Nobody reviews these solves**, so `MAX_ACCEPTED_CORRECTION_DEGREES` (15°, the search radius —
-  a solve cannot legitimately claim to have found something further away than it looked) rejects
-  the implausible ones. A wrong `CameraMounting` preset is the case it exists for: it yields a
-  correction that looks fine except for its size.
+- **Nobody reviews these solves**, so `MAX_ACCEPTED_CORRECTION_DEGREES` (50°) rejects the
+  implausible ones — a false `PlateSolver` match geometrically self-consistent enough to pass its
+  own inlier check, but against the wrong patch of sky. **This bound is provably insensitive to
+  `CameraMounting`, never a signal for a wrong preset there**: `PlateSolveAttempt.correctionDegrees`
+  is built with `cameraToDevice.conjugate()` and re-applies `cameraToDevice` against the very same
+  capture's orientation reading, so the two cancel out algebraically regardless of which preset is
+  active — confirmed both by that derivation and by testing all four `CameraMounting` presets
+  against one real photo, which returned the same correction (within noise) every time. What it
+  actually measures is a pure vision-vs-IMU comparison, so a large value is just as often an honest
+  compass error as a false match: a magnetometer near a telescope's own steel and motors can
+  legitimately be off by 20-30°+, especially on the very first solve before anything else has
+  corrected it, and 15° (once shared with the search radius) was rejecting exactly those. The bound
+  is now sized instead from the search geometry — the search radius (15°) plus roughly half a
+  phone's rear-lens field of view (commonly 30-40°) is the real ceiling on how far a *genuine* solve
+  can legitimately land from the seed.
 - **Cadence is a gap, not a period**: `SOLVE_INTERVAL_MILLIS` starts after the previous solve
   finishes, so a real cycle is that plus the hold, the exposure, opening the camera, and the solve
   itself — expect a refresh every ~10-20 s on a still scope, not every 5. This loop is
   `attemptPlateSolve`'s only caller, and it is serial by construction.
+- **Every failure has a reason, not just a null.** `attemptPlateSolve` returns `PlateSolveOutcome`
+  (`Success`/`Failure`), never a bare nullable `PlateSolveAttempt?` — `PlateSolver.solve` itself
+  returns `PlateSolverOutcome` for the same reason, carrying `PlateSolveDiagnostics` (detection/
+  candidate/matched-star counts) on *both* branches so a caller can tell "2 stars detected" from
+  "17 detected, 0 matched" from "solved, but the correction was rejected as implausible" — three
+  failures that used to look identical (`null`) but point at completely different fixes (exposure,
+  camera intrinsics/mounting, and a false match respectively). `AutoPlateSolveRefiner.status`
+  (`PlateSolveStatus`: IDLE/SOLVING/SUCCEEDED/FAILED) and `.lastOutcome` exist purely so the
+  Guidance app bar's status dot (`PlateSolveStatusIndicator`) has something to show — tapping it
+  surfaces the last outcome's own detail text. Neither StateFlow feeds back into `current` or
+  `AbsoluteReference`; they're read-only diagnostics. The dot itself is gated in `App.kt` on
+  `alignmentType == AlignmentType.PLATE_SOLVE` (passed as `null` otherwise), since the refiner's
+  loop never runs under `SENSORS_ONLY` and would otherwise show a permanently uninformative grey.
+- **`TelescopeBoresight` (the crosshair-drag calibration step) actually feeds guidance now**, via
+  `AppContainer.effectiveTelescopeDirection: StateFlow<Vector3>` — `TelescopeAxis.deviceVector`'s
+  coarse top-edge/back-face choice, refined to the exact calibrated pixel converted to a device-
+  frame ray (via `CameraIntrinsics.pixelToDirection` + `CameraMounting.cameraToDevice`) once a
+  plate-solve setup has captured at least one frame. `PointingService`, `AutoPlateSolveRefiner`'s
+  stillness check, and `attemptPlateSolve`'s own correction-degrees check all take this instead of
+  `TelescopeAxis` directly, so the live guidance display and the background solver can't disagree
+  about which direction is "the telescope." The conversion is computed **locally inside
+  `attemptPlateSolve`, not read back through `effectiveTelescopeDirection.value` afterward** —
+  writing the backing `MutableStateFlow` doesn't synchronously update a `combine().stateIn()`
+  downstream of it, so a read from a different dispatcher (the `withContext(Dispatchers.Default)`
+  around the solve itself) could otherwise race and see the *previous* capture's direction. The
+  cached value is never cleared once set: real camera intrinsics are a hardware constant for a
+  given selected camera, so a stale value from an earlier capture is still correct.
+- **`TelescopeAxis` only has two cases**, `TOP_EDGE` and `BACK_FACE` — every other edge/face was
+  reachable only through the Settings manual override and never produced by any app flow (the
+  wizard only ever sets these two; see "The alignment wizard" above), so they were pure unexercised
+  surface. Removed rather than kept "just in case": nothing else in this app mounts a phone
+  side-on or screen-first down a tube.
 
 ### Guidance math
 

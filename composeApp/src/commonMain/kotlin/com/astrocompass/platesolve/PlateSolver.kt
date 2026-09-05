@@ -47,8 +47,13 @@ object PlateSolver {
         searchRadius: Angle,
         referenceStars: List<ReferenceStar>,
         matchTolerance: Angle = Angle.ofDegrees(0.3),
-    ): PlateSolveResult? {
-        if (detections.size < MIN_MATCHED_STARS) return null
+    ): PlateSolverOutcome {
+        if (detections.size < MIN_MATCHED_STARS) {
+            return PlateSolverOutcome.Failed(
+                PlateSolveFailureReason.TOO_FEW_DETECTIONS,
+                PlateSolveDiagnostics(detectionCount = detections.size),
+            )
+        }
 
         val seedVector = seedBoresight.toUnitVector()
         val candidates = referenceStars
@@ -56,7 +61,12 @@ object PlateSolver {
             .filter { (_, direction) -> direction.angleTo(seedVector) <= searchRadius }
             .sortedBy { (star, _) -> star.magnitude }
             .take(MAX_CANDIDATES)
-        if (candidates.size < MIN_MATCHED_STARS) return null
+        if (candidates.size < MIN_MATCHED_STARS) {
+            return PlateSolverOutcome.Failed(
+                PlateSolveFailureReason.TOO_FEW_CANDIDATES,
+                PlateSolveDiagnostics(detectionCount = detections.size, candidateCount = candidates.size),
+            )
+        }
         val candidateVectors = candidates.map { it.second }
         val candidateSeparationsDeg = Array(candidateVectors.size) { a ->
             DoubleArray(candidateVectors.size) { b ->
@@ -91,7 +101,12 @@ object PlateSolver {
             }
         }
 
-        if (bestInliers.size < MIN_MATCHED_STARS) return null
+        if (bestInliers.size < MIN_MATCHED_STARS) {
+            return PlateSolverOutcome.Failed(
+                PlateSolveFailureReason.NO_GEOMETRIC_MATCH,
+                PlateSolveDiagnostics(detections.size, candidates.size, bestInliers.size),
+            )
+        }
 
         val finalRotation = AttitudeFit.solve(
             measured = bestInliers.map { (detectionIndex, _) -> imageVectors[detectionIndex] },
@@ -110,7 +125,10 @@ object PlateSolver {
         val matchedStars = bestInliers.map { (detectionIndex, candidateIndex) ->
             MatchedStar(imageVectors[detectionIndex], candidates[candidateIndex].first)
         }
-        return PlateSolveResult(centerEquatorial, bestInliers.size, rmsResidualDegrees, matchedStars)
+        return PlateSolverOutcome.Solved(
+            PlateSolveResult(centerEquatorial, bestInliers.size, rmsResidualDegrees, matchedStars),
+            PlateSolveDiagnostics(detections.size, candidates.size, bestInliers.size),
+        )
     }
 
     /** Maps every detection through the hypothesis [rotation] and greedily pairs it with its

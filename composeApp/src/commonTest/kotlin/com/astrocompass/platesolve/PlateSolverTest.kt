@@ -7,8 +7,8 @@ import com.astrocompass.astro.coords.EquatorialCoordinates
 import kotlin.math.pow
 import kotlin.random.Random
 import kotlin.test.Test
-import kotlin.test.assertNotNull
-import kotlin.test.assertNull
+import kotlin.test.assertEquals
+import kotlin.test.assertIs
 import kotlin.test.assertTrue
 
 /**
@@ -99,7 +99,7 @@ class PlateSolverTest {
         val rotation = trueRotation(tangentRa, tangentDec, rollDeg = 37.0)
         val field = buildField(rotation, tangentRa, tangentDec, starCount = 40, random = Random(1))
 
-        val result = PlateSolver.solve(
+        val outcome = PlateSolver.solve(
             detections = field.detections,
             intrinsics = intrinsics,
             seedBoresight = EquatorialCoordinates(tangentRa, tangentDec),
@@ -107,7 +107,8 @@ class PlateSolverTest {
             referenceStars = field.referenceStars,
         )
 
-        assertNotNull(result)
+        val solved = assertIs<PlateSolverOutcome.Solved>(outcome)
+        val result = solved.result
         assertTrue(result.matchedStarCount >= 8, "Expected at least 8 matched stars, got ${result.matchedStarCount}")
         assertTrue(result.rmsResidualDegrees < 0.05, "RMS residual too high: ${result.rmsResidualDegrees}")
         assertAngularSeparationBelow(EquatorialCoordinates(tangentRa, tangentDec), result.centerEquatorial, 0.05)
@@ -123,7 +124,7 @@ class PlateSolverTest {
             pixelNoise = 1.5, falseDetectionCount = 6,
         )
 
-        val result = PlateSolver.solve(
+        val outcome = PlateSolver.solve(
             detections = field.detections,
             intrinsics = intrinsics,
             seedBoresight = EquatorialCoordinates(tangentRa + Angle.ofDegrees(5.0), tangentDec - Angle.ofDegrees(4.0)),
@@ -132,7 +133,8 @@ class PlateSolverTest {
             matchTolerance = Angle.ofDegrees(0.35),
         )
 
-        assertNotNull(result)
+        val solved = assertIs<PlateSolverOutcome.Solved>(outcome)
+        val result = solved.result
         assertTrue(result.matchedStarCount >= 6, "Expected at least 6 matched stars, got ${result.matchedStarCount}")
         assertAngularSeparationBelow(EquatorialCoordinates(tangentRa, tangentDec), result.centerEquatorial, 0.3)
     }
@@ -147,7 +149,7 @@ class PlateSolverTest {
             dropoutFraction = 0.4,
         )
 
-        val result = PlateSolver.solve(
+        val outcome = PlateSolver.solve(
             detections = field.detections,
             intrinsics = intrinsics,
             seedBoresight = EquatorialCoordinates(tangentRa, tangentDec),
@@ -155,37 +157,40 @@ class PlateSolverTest {
             referenceStars = field.referenceStars,
         )
 
-        assertNotNull(result)
-        assertAngularSeparationBelow(EquatorialCoordinates(tangentRa, tangentDec), result.centerEquatorial, 0.1)
+        val solved = assertIs<PlateSolverOutcome.Solved>(outcome)
+        assertAngularSeparationBelow(EquatorialCoordinates(tangentRa, tangentDec), solved.result.centerEquatorial, 0.1)
     }
 
     @Test
-    fun returnsNull_whenTooFewStarsDetected() {
-        val result = PlateSolver.solve(
+    fun failsWithTooFewDetections_whenTooFewStarsDetected() {
+        val outcome = PlateSolver.solve(
             detections = listOf(StarCentroid(500.0, 500.0, 10.0), StarCentroid(510.0, 500.0, 10.0)),
             intrinsics = intrinsics,
             seedBoresight = EquatorialCoordinates(Angle.ofDegrees(0.0), Angle.ofDegrees(0.0)),
             searchRadius = Angle.ofDegrees(40.0),
             referenceStars = emptyList(),
         )
-        assertNull(result)
+        val failed = assertIs<PlateSolverOutcome.Failed>(outcome)
+        assertEquals(PlateSolveFailureReason.TOO_FEW_DETECTIONS, failed.reason)
+        assertEquals(2, failed.diagnostics.detectionCount)
     }
 
     @Test
-    fun returnsNull_whenSeedIsFarFromTheTrueField() {
+    fun failsWithTooFewCandidates_whenSeedIsFarFromTheTrueField() {
         val tangentRa = Angle.ofDegrees(180.0)
         val tangentDec = Angle.ofDegrees(20.0)
         val rotation = trueRotation(tangentRa, tangentDec, rollDeg = 0.0)
         val field = buildField(rotation, tangentRa, tangentDec, starCount = 40, random = Random(4))
 
-        val result = PlateSolver.solve(
+        val outcome = PlateSolver.solve(
             detections = field.detections,
             intrinsics = intrinsics,
             seedBoresight = EquatorialCoordinates(tangentRa + Angle.ofDegrees(140.0), tangentDec),
             searchRadius = Angle.ofDegrees(10.0),
             referenceStars = field.referenceStars,
         )
-        assertNull(result)
+        val failed = assertIs<PlateSolverOutcome.Failed>(outcome)
+        assertEquals(PlateSolveFailureReason.TOO_FEW_CANDIDATES, failed.reason)
     }
 
     private fun assertAngularSeparationBelow(expected: EquatorialCoordinates, actual: EquatorialCoordinates, maxDegrees: Double) {

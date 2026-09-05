@@ -21,9 +21,12 @@ import com.astrocompass.catalog.StarObject
 import com.astrocompass.guiding.AbsoluteReference
 import com.astrocompass.guiding.AlignmentAbsoluteReference
 import com.astrocompass.guiding.AutoPlateSolveRefiner
+import com.astrocompass.guiding.CameraMounting
 import com.astrocompass.guiding.CompassAbsoluteReference
 import com.astrocompass.guiding.FreshestAbsoluteReference
 import com.astrocompass.guiding.PlateSolveAttempt
+import com.astrocompass.guiding.PlateSolveOutcome
+import com.astrocompass.guiding.PlateSolveStatus
 import com.astrocompass.guiding.PointingService
 import com.astrocompass.guiding.PrioritizedAbsoluteReference
 import com.astrocompass.guiding.currentEquatorial
@@ -34,10 +37,14 @@ import com.astrocompass.location.MagneticDeclinationProvider
 import com.astrocompass.location.ObserverLocation
 import com.astrocompass.platesolve.CameraCapture
 import com.astrocompass.platesolve.CameraEnumerator
+import com.astrocompass.platesolve.CameraIntrinsics
 import com.astrocompass.platesolve.CapturedFrame
 import com.astrocompass.platesolve.CentroidDetector
+import com.astrocompass.platesolve.PlateSolveFailureReason
 import com.astrocompass.platesolve.PlateSolver
+import com.astrocompass.platesolve.PlateSolverOutcome
 import com.astrocompass.platesolve.ReferenceStar
+import com.astrocompass.platesolve.TelescopeBoresight
 import com.astrocompass.sensors.OrientationSensor
 import com.astrocompass.settings.AppPreferences
 import com.astrocompass.telescope.Lx200Codec
@@ -79,6 +86,22 @@ private val PLATE_SOLVE_SEARCH_RADIUS = Angle.ofDegrees(15.0)
  *  feedback, which reads as a hang rather than a slow failure. */
 private const val PLATE_SOLVE_TIMEOUT_MILLIS = 30_000L
 
+/** Where a calibrated [TelescopeBoresight] falls, in the phone's own IMU/body frame: the
+ *  calibrated pixel fraction turned into a ray via [intrinsics] (evaluated against the actual
+ *  captured frame's dimensions, [frameWidth]/[frameHeight]), then rotated into device axes via
+ *  [cameraMounting]'s fixed camera->device transform. The precise, camera-calibrated counterpart
+ *  to [com.astrocompass.guiding.TelescopeAxis.deviceVector]'s coarse top-edge/back-face choice --
+ *  see [AppContainer.effectiveTelescopeDirection] for where the two are combined. */
+private fun TelescopeBoresight.toDeviceVector(
+    intrinsics: CameraIntrinsics,
+    frameWidth: Int,
+    frameHeight: Int,
+    cameraMounting: CameraMounting,
+): Vector3 {
+    val cameraLocalRay = intrinsics.pixelToDirection((xFraction * frameWidth).toDouble(), (yFraction * frameHeight).toDouble())
+    return cameraMounting.cameraToDevice.rotate(cameraLocalRay)
+}
+
 /**
  * Owns every long-lived service for the app's lifetime: sensor, location, catalog, preferences,
  * alignment. Built once by the platform entry point (`MainActivity` / `MainViewController`,
@@ -116,17 +139,42 @@ class AppContainer(
     private val compassReference =
         CompassAbsoluteReference(scope, orientationSensor, locationResolver.resolved, magneticDeclinationProvider)
 
+    /** Set from the intrinsics/frame size of the most recent successful camera capture -- see
+     *  [attemptPlateSolve]. Never cleared once set: real camera intrinsics are a hardware constant
+     *  for a given selected camera/resolution, so a stale value from an earlier capture is still
+     *  correct, and recomputing on every capture (cheap) keeps it current if the user changes the
+     *  selected camera or the boresight calibration mid-session. */
+    private val calibratedTelescopeDirection = MutableStateFlow<Vector3?>(null)
+
+    /** Where the telescope's optical axis actually points, in device/IMU frame --
+     *  [com.astrocompass.guiding.TelescopeAxis.deviceVector]'s coarse top-edge/back-face choice, refined to the
+     *  camera-crosshair-calibrated direction ([AppPreferences.telescopeBoresight]) once a
+     *  plate-solve setup has captured at least one frame. Feeds [pointingService],
+     *  [autoPlateSolveRefiner]'s stillness check, and [attemptPlateSolve]'s own correction check,
+     *  so the live guidance display and the background solver always agree on the same pointing
+     *  direction rather than one using a finer vector while the other stays on the coarse one. */
+    val effectiveTelescopeDirection: StateFlow<Vector3> = combine(
+        preferences.telescopeAxis, calibratedTelescopeDirection,
+    ) { axis, calibrated -> calibrated ?: axis.deviceVector }
+        .stateIn(scope, SharingStarted.Eagerly, preferences.telescopeAxis.value.deviceVector)
+
     /** Live plate solves while guiding a camera-calibrated setup -- see [AutoPlateSolveRefiner].
      *  Only ever running under [AlignmentType.PLATE_SOLVE]; see [setAutoPlateSolveActive]. */
     private val autoPlateSolveRefiner = AutoPlateSolveRefiner(
         scope = scope,
         orientationSensor = orientationSensor,
-        telescopeAxis = preferences.telescopeAxis,
+        boresightDeviceVector = effectiveTelescopeDirection,
         attemptSolve = ::attemptPlateSolve,
         // Persisted once, not per solve: a warm start next launch is worth one write, while writing
         // every few seconds would churn storage for a value the running refiner already holds.
         onFirstSuccess = { attempt -> saveAlignment(attempt.correctedModel) },
     )
+
+    /** For the app bar's plate-solve status dot -- see [AutoPlateSolveRefiner.status] and
+     *  [AutoPlateSolveRefiner.lastOutcome]. Stays [PlateSolveStatus.IDLE] forever under
+     *  [AlignmentType.SENSORS_ONLY], since [setAutoPlateSolveActive] never starts the loop then. */
+    val plateSolveStatus: StateFlow<PlateSolveStatus> = autoPlateSolveRefiner.status
+    val plateSolveLastOutcome: StateFlow<PlateSolveOutcome?> = autoPlateSolveRefiner.lastOutcome
 
     /** The more recent of the live plate solve and the stored star alignment, and the rough compass
      *  only if there is neither -- see [FreshestAbsoluteReference] for why those two are ranked by
@@ -140,7 +188,7 @@ class AppContainer(
         fallback = compassReference,
     )
 
-    val pointingService = PointingService(scope, orientationSensor, absoluteReference, preferences.telescopeAxis)
+    val pointingService = PointingService(scope, orientationSensor, absoluteReference, effectiveTelescopeDirection)
 
     val telescopeConnection: TelescopeConnection =
         Lx200TelescopeConnection(scope, tcpTransportFactory, bluetoothTransportFactory, location = locationResolver.resolved)
@@ -182,19 +230,25 @@ class AppContainer(
 
     /** Captures one star sync: the configured telescope axis, in both frames, right now. Null
      *  if the sensor hasn't produced a reading yet or location is unset -- both prerequisites
-     *  the calling screen should already be gating on. */
+     *  the calling screen should already be gating on. Uses [effectiveTelescopeDirection] rather
+     *  than the raw [AppPreferences.telescopeAxis] directly -- always the same value for this,
+     *  sensors-only, path (the camera never runs, so it never refines away from the coarse axis),
+     *  but one canonical accessor beats every caller re-deriving the same fallback. */
     fun captureAlignmentPoint(target: SkyObject, source: AlignmentSource, nowEpochMillis: Long): AlignmentPoint? {
         val orientation = orientationSensor.orientation.value ?: return null
         val location = locationResolver.resolved.value ?: return null
         val skyDirection = target.currentHorizontal(location, nowEpochMillis).toEnu()
-        val sensorDirection = orientation.deviceToWorld.rotate(preferences.telescopeAxis.value.deviceVector)
+        val sensorDirection = orientation.deviceToWorld.rotate(effectiveTelescopeDirection.value)
         return AlignmentPoint(skyDirection, sensorDirection, nowEpochMillis, target.id, source)
     }
 
     /**
      * Takes one photo and plate-solves it against the loaded catalog, seeded from wherever
-     * [pointingService] currently thinks the telescope points. Returns null if there's no pointing
-     * direction or location yet, the camera capture failed, or too few stars matched.
+     * [pointingService] currently thinks the telescope points. Returns
+     * [PlateSolveOutcome.Failure] with a specific [PlateSolveFailureReason] if there's no pointing
+     * direction or location yet, the camera capture failed, too few stars were detected/matched, or
+     * the attitude fit itself failed -- never a bare null, so a caller (and, in turn, the app bar's
+     * plate-solve indicator) always has something concrete to show for a failed attempt.
      *
      * The seed can equally be the rough compass reference, which makes this the one path from
      * "no alignment at all" to a real one: [PlateSolveAlignment] recovers a complete 3-DOF fit
@@ -205,19 +259,36 @@ class AppContainer(
      * The orientation sensor reading and clock time are read immediately after
      * [CameraCapture.captureFrame] returns, before the (comparatively slow) detection/matching
      * runs -- that's the shutter-time snapshot the whole feature exists to get right, not a value
-     * read once the solve happens to finish. [PlateSolveAlignment.solve] is called right here too
-     * (not deferred to [applyPlateSolve]), so the [PlateSolveAttempt] the caller reviews is
-     * exactly what gets saved -- confirming it later can't silently pick up a changed
-     * [AppPreferences.cameraMounting] or a fresher (and wrong, per the same invariant) sensor
-     * reading.
+     * read once the solve happens to finish. [PlateSolveAlignment.solve] is called right here too,
+     * so the [PlateSolveAttempt] the caller reviews is exactly what gets saved -- confirming it
+     * later can't silently pick up a changed [AppPreferences.cameraMounting] or a fresher (and
+     * wrong, per the same invariant) sensor reading.
      */
-    suspend fun attemptPlateSolve(): PlateSolveAttempt? {
-        val seedSkyDirection = pointingService.currentSkyDirection.value ?: return null
-        val location = locationResolver.resolved.value ?: return null
-        val frame = cameraCapture.captureFrame() ?: return null
+    suspend fun attemptPlateSolve(): PlateSolveOutcome {
+        val seedSkyDirection = pointingService.currentSkyDirection.value
+            ?: return PlateSolveOutcome.Failure(PlateSolveFailureReason.NO_POINTING_REFERENCE)
+        val location = locationResolver.resolved.value
+            ?: return PlateSolveOutcome.Failure(PlateSolveFailureReason.NO_LOCATION)
+        val frame = cameraCapture.captureFrame()
+            ?: return PlateSolveOutcome.Failure(PlateSolveFailureReason.CAMERA_CAPTURE_FAILED)
 
-        val orientation = orientationSensor.orientation.value ?: return null
+        val orientation = orientationSensor.orientation.value
+            ?: return PlateSolveOutcome.Failure(PlateSolveFailureReason.ORIENTATION_UNAVAILABLE)
         val capturedAtEpochMillis = currentEpochMillis()
+
+        // A successful capture is all this needs, independent of whether a solve comes of it --
+        // the camera's intrinsics and frame size are hardware constants, not something a solve's
+        // star match determines. Runs even on a solve that goes on to fail, since a failed solve
+        // still means the crosshair calibration is now known for this camera. Computed locally
+        // and threaded through below, rather than read back afterward via
+        // effectiveTelescopeDirection.value: updating calibratedTelescopeDirection doesn't
+        // synchronously update a stateIn()-derived combine() downstream of it, so a read from a
+        // different dispatcher (see the withContext(Dispatchers.Default) below) could otherwise
+        // race and see the *previous* capture's direction instead of this one's.
+        val telescopeDirectionDeviceFrame = preferences.telescopeBoresight.value
+            ?.toDeviceVector(frame.intrinsics, frame.width, frame.height, preferences.cameraMounting.value)
+            ?.also { calibratedTelescopeDirection.value = it }
+            ?: preferences.telescopeAxis.value.deviceVector
 
         val julianDay = AstroTime.julianDay(capturedAtEpochMillis)
         val lst = AstroTime.localSiderealTime(julianDay, location.longitude)
@@ -231,9 +302,12 @@ class AppContainer(
         // cost isn't (see PLATE_SOLVE_TIMEOUT_MILLIS).
         return withTimeoutOrNull(PLATE_SOLVE_TIMEOUT_MILLIS) {
             withContext(Dispatchers.Default) {
-                solveAgainstCatalog(frame, seedBoresight, orientation.deviceToWorld, location, seedSkyDirection, capturedAtEpochMillis)
+                solveAgainstCatalog(
+                    frame, seedBoresight, orientation.deviceToWorld, location, seedSkyDirection,
+                    telescopeDirectionDeviceFrame, capturedAtEpochMillis,
+                )
             }
-        }
+        } ?: PlateSolveOutcome.Failure(PlateSolveFailureReason.TIMEOUT)
     }
 
     private fun solveAgainstCatalog(
@@ -242,8 +316,9 @@ class AppContainer(
         deviceToWorld: Quaternion,
         location: ObserverLocation,
         seedSkyDirection: Vector3,
+        telescopeDirectionDeviceFrame: Vector3,
         capturedAtEpochMillis: Long,
-    ): PlateSolveAttempt? {
+    ): PlateSolveOutcome {
         val detections = CentroidDetector.detect(frame.luminance, frame.width, frame.height)
         // Restricted to named/Bayer/Flamsteed stars even though stars.bin itself now also carries
         // unnamed mag<=7 field stars (added for sky map density) -- PlateSolver's candidate-pair
@@ -257,29 +332,35 @@ class AppContainer(
             .filter { it.properName.isNotEmpty() || it.bayer.isNotEmpty() || it.flamsteed != 0 }
             .map { ReferenceStar(it.j2000.rightAscension, it.j2000.declination, it.magnitude) }
 
-        val result = PlateSolver.solve(
+        val solverOutcome = PlateSolver.solve(
             detections = detections,
             intrinsics = frame.intrinsics,
             seedBoresight = seedBoresight,
             searchRadius = PLATE_SOLVE_SEARCH_RADIUS,
             referenceStars = referenceStars,
-        ) ?: return null
+        )
+        val solved = when (solverOutcome) {
+            is PlateSolverOutcome.Failed -> return PlateSolveOutcome.Failure(solverOutcome.reason, solverOutcome.diagnostics)
+            is PlateSolverOutcome.Solved -> solverOutcome
+        }
 
         val alignmentResult = PlateSolveAlignment.solve(
-            plateSolveResult = result,
+            plateSolveResult = solved.result,
             deviceToWorld = deviceToWorld,
             cameraToDevice = preferences.cameraMounting.value.cameraToDevice,
             location = location,
             nowEpochMillis = capturedAtEpochMillis,
         )
-        if (alignmentResult !is AlignmentResult.Success) return null
+        if (alignmentResult !is AlignmentResult.Success) {
+            return PlateSolveOutcome.Failure(PlateSolveFailureReason.ALIGNMENT_FIT_FAILED, solved.diagnostics)
+        }
 
         val newPredictedPointing = alignmentResult.model.sensorToSky.rotate(
-            deviceToWorld.rotate(preferences.telescopeAxis.value.deviceVector),
+            deviceToWorld.rotate(telescopeDirectionDeviceFrame),
         )
         val correctionDegrees = seedSkyDirection.angleTo(newPredictedPointing).degrees
 
-        return PlateSolveAttempt(result, alignmentResult.model, correctionDegrees)
+        return PlateSolveOutcome.Success(PlateSolveAttempt(solved.result, alignmentResult.model, correctionDegrees, solved.diagnostics))
     }
 
     /** [Lx200TelescopeConnection.connect] runs the mount-sync sequence (time, site, unpark)

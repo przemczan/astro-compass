@@ -13,6 +13,7 @@ import com.astrocompass.platesolve.CameraIntrinsics
 import com.astrocompass.platesolve.MatchedStar
 import com.astrocompass.platesolve.PlateSolveResult
 import com.astrocompass.platesolve.PlateSolver
+import com.astrocompass.platesolve.PlateSolverOutcome
 import com.astrocompass.platesolve.ReferenceStar
 import com.astrocompass.platesolve.StarCentroid
 import kotlin.math.abs
@@ -21,7 +22,6 @@ import kotlin.math.cos
 import kotlin.random.Random
 import kotlin.test.Test
 import kotlin.test.assertIs
-import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 /**
@@ -109,14 +109,15 @@ class PlateSolveAlignmentTest {
             detections += centroid
         }
 
-        val plateSolveResult = PlateSolver.solve(
+        val solverOutcome = PlateSolver.solve(
             detections = detections,
             intrinsics = intrinsics,
             seedBoresight = tangentEquatorial,
             searchRadius = Angle.ofDegrees(40.0),
             referenceStars = referenceStars,
         )
-        assertNotNull(plateSolveResult)
+        val solved = assertIs<PlateSolverOutcome.Solved>(solverOutcome)
+        val plateSolveResult = solved.result
         assertTrue(plateSolveResult.matchedStars.size >= 8, "Expected at least 8 matched stars, got ${plateSolveResult.matchedStars.size}")
 
         val result = PlateSolveAlignment.solve(

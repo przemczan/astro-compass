@@ -1,6 +1,7 @@
 package com.astrocompass.guiding
 
 import com.astrocompass.alignment.AlignmentModel
+import com.astrocompass.platesolve.PlateSolveDiagnostics
 import com.astrocompass.platesolve.PlateSolveResult
 
 /**
@@ -11,14 +12,26 @@ import com.astrocompass.platesolve.PlateSolveResult
  * changing in between.
  *
  * [correctionDegrees] is the angle between where the app currently thinks the telescope points
- * and where [correctedModel] would put it -- the practical signal for whether this solve (and the
- * configured [CameraMounting]) is trustworthy: a plausible drift correction is a few degrees, a
- * wrong camera-mounting preset is typically tens of degrees. The user-initiated solve puts that
- * number in front of the user before anything is applied; the background refiner has no user to
- * ask, and bounds it against its own threshold instead (see [AutoPlateSolveRefiner]).
+ * (from the sensor stream/compass) and where this solve's own star match independently says the
+ * crosshair points -- a pure vision-vs-IMU comparison. **It is not sensitive to [CameraMounting]
+ * at all**: [correctedModel] is built with `cameraToDevice.conjugate()` and this angle is computed
+ * by re-applying `cameraToDevice` to the same capture's orientation reading, so the two cancel
+ * algebraically and [CameraMounting] drops out of the comparison entirely, regardless of whether
+ * it's right or wrong. What a large value here actually means is either a false star match, or --
+ * just as often, and not a fault -- a seed (typically the compass, before the first solve lands)
+ * that was simply wrong by that much; magnetometer error of 20-30°+ near a telescope's own steel
+ * and motors is ordinary, not exceptional. [AutoPlateSolveRefiner] bounds this against
+ * `MAX_ACCEPTED_CORRECTION_DEGREES` to reject an implausible false match, sized from the search
+ * geometry (see that constant's own doc comment) rather than from any assumption about compass
+ * accuracy or camera mounting.
+ *
+ * [diagnostics] carries the detection/candidate/match star counts behind a *successful* solve --
+ * useful for judging exposure/ISO headroom even when a solve landed, not just for explaining a
+ * [PlateSolveOutcome.Failure].
  */
 data class PlateSolveAttempt(
     val result: PlateSolveResult,
     val correctedModel: AlignmentModel,
     val correctionDegrees: Double,
+    val diagnostics: PlateSolveDiagnostics = PlateSolveDiagnostics(),
 )

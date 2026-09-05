@@ -317,6 +317,8 @@ fun GuiderApp(container: AppContainer, onExitApp: () -> Unit = {}) {
                     catalogRepository = container.catalogRepository,
                     onTargetToleranceDegrees = toleranceDegrees,
                     onAutoPlateSolveActive = { active -> container.setAutoPlateSolveActive(active) },
+                    plateSolveStatus = if (alignmentType == AlignmentType.PLATE_SOLVE) container.plateSolveStatus else null,
+                    plateSolveLastOutcome = if (alignmentType == AlignmentType.PLATE_SOLVE) container.plateSolveLastOutcome else null,
                     menu = menuActions,
                     onOpenSearch = { showSearch = true },
                     onExitGuiding = { if (wizardObjects != null) cancelWizard() else isGuiding = false },
