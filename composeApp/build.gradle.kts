@@ -81,8 +81,8 @@ android {
         applicationId = "com.astrocompass"
         minSdk = libs.versions.android.minSdk.get().toInt()
         targetSdk = libs.versions.android.targetSdk.get().toInt()
-        versionCode = 8
-        versionName = "2.4.0-beta"
+        versionCode = 9
+        versionName = "2.5.0-beta"
     }
 
     packaging {
