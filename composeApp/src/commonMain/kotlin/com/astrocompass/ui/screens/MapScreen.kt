@@ -2,6 +2,7 @@
 
 package com.astrocompass.ui.screens
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -11,26 +12,18 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Explore
 import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material.icons.filled.Search
-import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material.icons.filled.SettingsInputAntenna
-import androidx.compose.material.icons.filled.Visibility
-import androidx.compose.material3.BottomAppBar
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
-import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
-import androidx.compose.material3.VerticalDivider
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -48,22 +41,24 @@ import com.astrocompass.astro.time.currentEpochMillis
 import com.astrocompass.catalog.CatalogRepository
 import com.astrocompass.catalog.MapObjectFilter
 import com.astrocompass.catalog.SkyObject
-import com.astrocompass.guiding.GuidingMode
 import com.astrocompass.guiding.PointingOrigin
 import com.astrocompass.guiding.SkyPointingSource
 import com.astrocompass.guiding.currentHorizontal
 import com.astrocompass.location.ObserverLocation
 import com.astrocompass.ui.BackHandler
 import com.astrocompass.ui.components.MAP_ZOOM_STEP_FACTOR
-import com.astrocompass.ui.components.GuidingModeButton
+import com.astrocompass.ui.components.AppBottomBar
+import com.astrocompass.ui.components.AppMenuActions
 import com.astrocompass.ui.components.MapFilterSheet
 import com.astrocompass.ui.components.MapFollowZoomControls
 import com.astrocompass.ui.components.SkyMap
 import com.astrocompass.ui.components.SkyMapMarker
 import com.astrocompass.ui.components.ToolbarActionButton
+import com.astrocompass.ui.components.mapOverlayScrim
 import com.astrocompass.ui.components.rememberSkyMapSnapshot
 import com.astrocompass.ui.skymap.SkyMapViewport
 import com.astrocompass.ui.theme.TelescopeBlue
+import com.astrocompass.ui.theme.WarningAmber
 import kotlinx.coroutines.launch
 
 /** How long a second back press has to follow the first to actually exit, rather than just
@@ -72,7 +67,7 @@ import kotlinx.coroutines.launch
 private const val DOUBLE_BACK_TO_EXIT_WINDOW_MILLIS = 2_000L
 
 /** The main/home screen: a full-sky browse map plus whatever's currently marked. Search lives on
- *  its own screen ([SearchScreen]) reached via the top-bar search icon -- this screen shows the
+ *  its own screen ([SearchScreen]) reached from the bottom toolbar -- this screen shows the
  *  same catalog [SkyMap]'s own zoom-driven reveal curves would show anywhere else (see
  *  [rememberSkyMapSnapshot]), never a query- or category-narrowed subset.
  *
@@ -89,27 +84,17 @@ fun MapScreen(
     /** Marked in blue while a connected mount is reporting -- see
      *  [com.astrocompass.AppContainer.telescopeSkyDirection]. */
     telescopeDirection: Vector3?,
-    isStarAligned: Boolean,
-    isTelescopeConnected: Boolean,
-    /** Which instrument the app is currently working through. Offered here, not just on the
-     *  Guidance and Alignment screens, because it changes what most of the app means -- and
-     *  because the alignment chip beside it would otherwise report the phone's alignment to
-     *  someone whose pointing comes entirely from a mount. */
-    guidingMode: GuidingMode,
-    onGuidingModeChange: (GuidingMode) -> Unit,
+    menu: AppMenuActions,
     selectedTarget: SkyObject?,
     onSelectTarget: (SkyObject) -> Unit,
     onGoto: () -> Unit,
     viewport: SkyMapViewport,
     onViewportChange: (SkyMapViewport) -> Unit,
     showObjectPhotos: Boolean,
+    dimBelowHorizon: Boolean,
     mapObjectFilter: MapObjectFilter,
     onMapObjectFilterChange: (MapObjectFilter) -> Unit,
     onOpenSearch: () -> Unit,
-    onOpenSettings: () -> Unit,
-    onOpenAlignment: () -> Unit,
-    onOpenNightWizard: () -> Unit,
-    onOpenTelescope: () -> Unit,
     onExitApp: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -130,57 +115,16 @@ fun MapScreen(
 
     Scaffold(
         modifier = modifier,
-        topBar = {
-            TopAppBar(
-                title = { Text("Find an object") },
-                actions = {
-                    IconButton(onClick = onOpenSearch) { Icon(Icons.Default.Search, contentDescription = "Search") }
-                    IconButton(onClick = onOpenSettings) { Icon(Icons.Default.Settings, contentDescription = "Settings") }
-                },
-            )
-        },
+        topBar = { TopAppBar(title = { Text("Find an object") }) },
         bottomBar = {
-            BottomAppBar {
-                GuidingModeButton(
-                    mode = guidingMode,
-                    telescopeConnected = isTelescopeConnected,
-                    onModeChange = onGuidingModeChange,
-                )
-                VerticalDivider(Modifier.height(32.dp).padding(horizontal = 4.dp))
-                ToolbarActionButton(icon = Icons.Default.Visibility, label = "Filter", onClick = { showFilterSheet = true })
-                // "Not aligned" is a claim about the *phone's* star fit, and only Phone mode is
-                // driven by it -- under Telescope mode the mount supplies pointing on its own, so
-                // the chip drops to a neutral "Align" rather than nagging about a model nothing is
-                // using. Whether the mount itself carries a model is not something the app can ask.
-                val phoneAlignmentMatters = guidingMode == GuidingMode.PHONE
-                val needsAlignment = phoneAlignmentMatters && !isStarAligned
-                ToolbarActionButton(
-                    icon = Icons.Default.Explore,
-                    label = when {
-                        !phoneAlignmentMatters -> "Align"
-                        isStarAligned -> "Aligned"
-                        else -> "Not aligned"
-                    },
-                    onClick = onOpenAlignment,
-                    // Flags that action's still needed -- a fresh "not aligned yet" state, not an
-                    // error, so a neutral "needs attention" tone (primary), not error/warning ones.
-                    containerColor = if (needsAlignment) MaterialTheme.colorScheme.primaryContainer else null,
-                    contentColor = if (needsAlignment) MaterialTheme.colorScheme.onPrimaryContainer else LocalContentColor.current,
-                )
-                ToolbarActionButton(icon = Icons.Default.AutoAwesome, label = "Night wizard", onClick = onOpenNightWizard)
-                ToolbarActionButton(
-                    icon = Icons.Default.SettingsInputAntenna,
-                    label = if (isTelescopeConnected) "Connected" else "Telescope",
-                    onClick = onOpenTelescope,
-                    containerColor = if (isTelescopeConnected) MaterialTheme.colorScheme.primaryContainer else null,
-                    contentColor = if (isTelescopeConnected) MaterialTheme.colorScheme.onPrimaryContainer else LocalContentColor.current,
-                )
+            AppBottomBar(menu) {
+                ToolbarActionButton(icon = Icons.Default.Search, label = "Search", onClick = onOpenSearch)
             }
         },
         snackbarHost = { SnackbarHost(snackbarHostState) },
     ) { padding ->
         if (location == null) {
-            LocationRequiredPrompt(onOpenSettings, Modifier.padding(padding))
+            LocationRequiredPrompt(menu.onOpenSettings, Modifier.padding(padding))
             return@Scaffold
         }
 
@@ -223,6 +167,7 @@ fun MapScreen(
                     constellationLines = snapshot.constellationLines,
                     northOffsetDirections = snapshot.northOffsetDirections,
                     showObjectPhotos = showObjectPhotos,
+                    dimBelowHorizon = dimBelowHorizon,
                     markers = listOfNotNull(
                         selectedTarget?.let { target ->
                             SkyMapMarker(
@@ -235,6 +180,11 @@ fun MapScreen(
                             SkyMapMarker(
                                 direction = direction,
                                 color = if (pointingOrigin == PointingOrigin.TELESCOPE) TelescopeBlue else MaterialTheme.colorScheme.secondary,
+                                // In Telescope mode this marker *is* the telescope's own position
+                                // (see the dedup below), not the phone's -- see the same labeling
+                                // in GuidanceScreen.
+                                label = if (pointingOrigin == PointingOrigin.TELESCOPE) "Telescope" else "Phone",
+                                labelAbove = true,
                             )
                         },
                         // In Telescope mode the current-pointing marker above already sits exactly
@@ -251,8 +201,16 @@ fun MapScreen(
                     onEnableFollow = { followPointing = true },
                     onZoomIn = { onViewportChange(viewport.zoomedBy(MAP_ZOOM_STEP_FACTOR)) },
                     onZoomOut = { onViewportChange(viewport.zoomedBy(1f / MAP_ZOOM_STEP_FACTOR)) },
+                    onOpenFilter = { showFilterSheet = true },
                     modifier = Modifier.align(Alignment.TopEnd).padding(top = 8.dp, end = 8.dp),
                 )
+                if (!menu.isStarAligned) {
+                    NotCalibratedBanner(
+                        onCalibrate = menu.onOpenAlignment,
+                        // End padding clears the control cluster sharing this corner of the map.
+                        modifier = Modifier.align(Alignment.TopStart).padding(top = 8.dp, start = 8.dp, end = 64.dp),
+                    )
+                }
                 if (selectedTarget != null) {
                     Row(
                         Modifier.align(Alignment.BottomCenter).fillMaxWidth().padding(bottom = 16.dp),
@@ -271,6 +229,32 @@ fun MapScreen(
             onFilterChange = onMapObjectFilterChange,
             onDismiss = { showFilterSheet = false },
         )
+    }
+}
+
+/** Shown on the map until a real calibration exists. Deliberately a nudge and not a wall: pointing
+ *  still works off the compass fallback (see [com.astrocompass.alignment.CompassAlignment]), it is
+ *  just rough -- which the menu's own badge alone was too easy to miss. */
+@Composable
+private fun NotCalibratedBanner(onCalibrate: () -> Unit, modifier: Modifier = Modifier) {
+    Row(
+        modifier.mapOverlayScrim().clickable(onClick = onCalibrate).padding(horizontal = 12.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(
+            Icons.Default.Explore,
+            contentDescription = null,
+            tint = WarningAmber,
+            modifier = Modifier.padding(end = 8.dp),
+        )
+        Column {
+            Text("Not calibrated", color = WarningAmber, style = MaterialTheme.typography.bodyMedium)
+            Text(
+                "Pointing is rough — tap to calibrate.",
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                style = MaterialTheme.typography.bodySmall,
+            )
+        }
     }
 }
 

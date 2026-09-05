@@ -7,7 +7,7 @@ import androidx.compose.ui.geometry.Offset
 /**
  * A live camera preview of [cameraId] (and, if non-null, specifically its [physicalCameraId] lens
  * -- see [com.astrocompass.platesolve.CameraDescriptor]'s doc comment), cropped to at most its own
- * center 50%x50% so [com.astrocompass.ui.screens.PhoneCalibrationScreen]'s crosshair step only ever
+ * center 50%x50% so the alignment wizard's crosshair step only ever
  * shows the region relevant to lining up a telescope's field of view -- the crop zooms in further,
  * automatically, as [panFraction] approaches a frame edge, so the visible window never samples
  * past the real image. [panFraction] shifts which part of the raw frame that crop shows, as a

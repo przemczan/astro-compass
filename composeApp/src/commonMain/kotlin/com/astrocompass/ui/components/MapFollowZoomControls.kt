@@ -7,6 +7,7 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.GpsFixed
 import androidx.compose.material.icons.filled.GpsNotFixed
 import androidx.compose.material.icons.filled.Remove
+import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -21,15 +22,17 @@ import androidx.compose.ui.unit.dp
 const val MAP_ZOOM_STEP_FACTOR = 1.25f
 
 /**
- * The follow/zoom button cluster overlaid on a sky map -- used identically by the browse map
- * (Search) and the guidance map, so the map controls read as the same control everywhere they
- * appear. [onEnableFollow] only ever turns following on; turning it off happens by panning or
- * pinching the map itself (see each caller's `onManualInteraction`), same as the icon/tint here
- * only ever reflects that state rather than toggling it.
+ * The control cluster overlaid on every sky map, so the map controls read as the same control
+ * wherever they appear. [onEnableFollow] only ever turns following on; turning it off happens by
+ * panning or pinching the map itself (see each caller's `onManualInteraction`), same as the
+ * icon/tint here only ever reflects that state rather than toggling it.
  *
  * The zoom buttons call [onZoomIn]/[onZoomOut] directly rather than going through the map's own
  * gesture path, so -- unlike pinch-zoom -- they don't disengage following: they're the way to
  * zoom while the map keeps recentering on the telescope's pointing every tick.
+ *
+ * [onOpenFilter] belongs here rather than in the bottom toolbar because what the map draws is a
+ * property of the map, not of the screen around it -- and every screen showing one needs it.
  */
 @Composable
 fun MapFollowZoomControls(
@@ -37,6 +40,7 @@ fun MapFollowZoomControls(
     onEnableFollow: () -> Unit,
     onZoomIn: () -> Unit,
     onZoomOut: () -> Unit,
+    onOpenFilter: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Column(
@@ -55,6 +59,9 @@ fun MapFollowZoomControls(
         }
         IconButton(onClick = onZoomOut) {
             Icon(Icons.Default.Remove, contentDescription = "Zoom out")
+        }
+        IconButton(onClick = onOpenFilter) {
+            Icon(Icons.Default.Visibility, contentDescription = "Filter visible objects")
         }
     }
 }

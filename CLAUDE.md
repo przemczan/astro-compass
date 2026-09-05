@@ -56,13 +56,14 @@ All application code lives in `composeApp/src/`, a single Gradle module with thr
 | `astro/ephemeris/` | `SunEphemeris`, `MoonEphemeris`, `PlanetEphemeris` (JPL Keplerian elements), `SolarSystemEphemeris` facade |
 | `astro/io/` | `BinaryReader` — little-endian reader for the catalog blobs (no `java.nio` in `commonMain`) |
 | `catalog/` | `SkyObject` sealed interface (`StarObject`, `DeepSkyObject`, `SolarSystemObject`), `CatalogFormat` (binary decode), `CatalogRepository`, `CatalogSearch` |
-| `alignment/` | `AlignmentPoint`, `AlignmentModel`, `AlignmentSolver` (yaw-only + Davenport q-method via `JacobiEigenSolver`), `AlignmentStore`, `PlateSolveAlignment`, `CompassAlignment` (magnetometer-only `sensorToSky`, no points behind it) |
+| `alignment/` | `AlignmentPoint`, `AlignmentModel`, `AlignmentSolver` (yaw-only + Davenport q-method via `JacobiEigenSolver`), `AlignmentStore`, `AlignmentType` (which instrument the user aligned with), `PlateSolveAlignment`, `CompassAlignment` (magnetometer-only `sensorToSky`, no points behind it) |
 | `sensors/` | `OrientationSensor` interface, `SensorCapabilities`/`defaultSource()` (auto-selection logic), `FakeOrientationSensor` |
 | `location/` | `ObserverLocation`, `LocationProvider` interface, `LocationResolver` (manual-override-wins-over-GPS), `MagneticDeclinationProvider` interface |
-| `guiding/` | `TelescopeAxis`, `AbsoluteReference` (+ `AlignmentAbsoluteReference`, `CompassAbsoluteReference`, `PrioritizedAbsoluteReference`), `PointingService` (sensor + reference fusion), `GuidanceCalculator`, `CurrentPosition` (target alt/az right now) |
+| `guiding/` | `TelescopeAxis`, `AbsoluteReference` (+ `AlignmentAbsoluteReference`, `CompassAbsoluteReference`, `AutoPlateSolveRefiner`, `PrioritizedAbsoluteReference`), `StillnessTracker`, `PointingService` (sensor + reference fusion), `GuidanceCalculator`, `CurrentPosition` (target alt/az right now) |
 | `settings/` | `AppPreferences` — multiplatform-settings-backed, hand-rolled reactive (`MutableStateFlow` seeded from storage + setter that persists) |
-| `ui/screens/` | `SearchScreen`, `GuidanceScreen`, `AlignmentScreen` (+ `AlignmentSession`, its hoisted run state), `SettingsScreen` |
-| `ui/components/` | `ArrowIndicator`, `DeltaBar`, `SkyMap` (pannable/zoomable alt-az chart) |
+| `ui/screens/` | `MapScreen` (home), `SearchScreen`, `GuidanceScreen`, `AlignmentScreen` (a thin wizard host; the steps live in `ui/screens/alignment/`) + `AlignmentSession` (its hoisted run and step state), `SettingsScreen` |
+| `ui/screens/alignment/` | `AlignmentTypeStep`, `StarAlignmentStep`, `CameraCalibrationSteps` — one full screen per wizard branch |
+| `ui/components/` | `AppBottomBar` (+ `AppMenuActions`), `ArrowIndicator`, `DeltaBar`, `SkyMap` (pannable/zoomable alt-az chart) |
 | `ui/skymap/` | `SkyMapViewport` (pan/zoom state), `SkyMapScene` (projection/culling/hit-test), `SkyMapDirectionCache` (per-tick catalog + constellation-line ENU snapshot) -- `SkyMap`'s non-Composable backing logic, kept separately unit-testable |
 | `ui/theme/` | `GuiderTheme`, `AppTheme` (Light/Dark/Night) |
 
@@ -70,22 +71,48 @@ All application code lives in `composeApp/src/`, a single Gradle module with thr
 catalog, preferences, alignment — built once by the platform entry point and injected into
 `GuiderApp`. Navigation is state-based in `App.kt` (booleans/nullable vars), no nav library.
 
-### The alignment model
+### The alignment wizard
+
+`AlignmentScreen` is a linear wizard whose first step asks **which instrument this setup aligns
+with** (`AlignmentType`), because a phone with a usable camera never needs star syncs at all — one
+plate solve recovers a complete 3-DOF fit. The two branches share nothing past that fork:
+
+- `SENSORS_ONLY` → `StarAlignmentStep`, the 2–3 star sync flow below.
+- `PLATE_SOLVE` → `CameraCalibrationSteps` (mirror or no mirror → mount the phone → point the
+  telescope → center the crosshair → done). **No sky reference is established in the wizard**:
+  pointing falls back to the compass until guiding's own `AutoPlateSolveRefiner` lands its first
+  solve, seeded off that compass inside `attemptPlateSolve`'s ±15° search.
+
+**The wizard sets `TelescopeAxis` itself, as each branch's mounting question is answered** — mirror
+→ `TOP_EDGE`, no mirror → `BACK_FACE`, sensors-only → `TOP_EDGE` (a clamp along the tube is the only
+way that branch is mounted). It is applied at answer time rather than at the wizard's last step,
+unlike every other value the wizard collects: the axis is read live by `PointingService` and
+`AutoPlateSolveRefiner`, and each `AlignmentPoint` is built from it as it's captured, so a value
+saved only at the end would leave every step before it working off the previous setup's geometry.
+The Settings entry remains, as the manual override.
+
+The chosen type and the completion time are persisted in `AppPreferences`
+(`alignmentType`/`alignmentCompletedAtEpochMillis`), **not** on `AlignmentModel`: a plate-solve
+setup replaces its model every few seconds, so a field on the model would be rewritten by the very
+mechanism that reads it. The first step reports them back ("Last aligned 2 h ago · Phone sensors").
+
+The step itself lives in `AlignmentSession` alongside the run, since the menu's Settings entry tears
+the screen down. `AlignmentStep.previous` is the whole of back navigation — the toolbar's Back
+button and `App.kt`'s `BackHandler` both walk it, so the two cannot disagree, and leaving from the
+first step exits the screen.
 
 `AlignmentSolver.solve()` fits `sensorToSky: Quaternion` — the rotation from the orientation
 sensor's own reference frame to true sky (ENU) — from 2 or 3 star syncs via Davenport's q-method,
 chosen over Kabsch/SVD because it cannot return a reflection. There is no from-scratch 1-star
-path; `AlignmentScreen` walks the user through syncs one star at a time (pick a star, point the
+path; `StarAlignmentStep` walks the user through syncs one star at a time (pick a star, point the
 telescope at it, confirm), never syncing on the tap that picks the star. The last confirm solves
 immediately and shows the RMS with an OK that saves and closes — there is no separate "compute"
 step, and the solve is a `remember`-derived value rather than an effect writing state.
 
-The screen is a sky map with every step of that flow overlaid on it — picking, confirming, the
+That step is a sky map with every stage of the flow overlaid on it — picking, confirming, the
 failure notice, the finished-fit card — rather than a `when` that swaps the map out. Picking a star
 recenters the viewport on it and drops `SkyMap`'s `onSelect` to null, so the map stays pannable as
-an overview while only the pending overlay's own buttons can change or commit the pick. Its bottom
-toolbar carries the same `GuidingModeButton` as `GuidanceScreen`, and the mode is one app-wide
-setting, not per-screen.
+an overview while only the pending overlay's own buttons can change or commit the pick.
 
 **`GuidingMode` picks which instrument the run aligns — never both.** `PHONE` fits the phone's
 `AlignmentModel` as above and never touches the mount. `TELESCOPE` drives OnStep's own stateful
@@ -118,21 +145,18 @@ cannot land as stop-then-start. Because release is what stops the mount, the pad
 torn down mid-press cannot stop the mount from its own dying scope.
 
 The run lives in `AlignmentSession`, owned by `GuiderApp`, not remembered inside the screen: the
-screen's own Settings button tears it down (`showSettings` is matched ahead of `showAlignment`),
+menu's Settings entry tears it down (`showSettings` is matched ahead of `showAlignment`),
 and an armed mount sequence that the app forgot would offer "Start" again — re-homing a mount two
 stars into a good run. For the same reason the two modes keep entirely separate progress (star
 counts included) and switching between them discards neither: `guidingMode` derives to `PHONE` the
 instant a link drops, so clearing on a mode change would wipe the memory of an armed mount on any
 Bluetooth blip.
 
-`AlignmentSolver.resync()` is the separate one-tap drift remedy behind the Guidance screen's
-"Sync on this object": it corrects only yaw on top of an existing 2-3 star model rather than
-replacing it, composing the same yaw-only math onto `existingModel.sensorToSky` instead of solving
-from scratch -- replacing the model outright would discard the mounting correction the original
-2-3 star fit absorbed. For the same reason it is unavailable with no model at all: yaw-correcting
-the compass fallback would persist something the UI presents as a real alignment while carrying
-the compass's entirely uncorrected mounting offset. Plate solving is the honest upgrade out of
-compass mode — one photo yields a complete 3-DOF fit with no prior model.
+**Guiding offers no manual alignment correction at all** — no "Platesolve" button, no yaw
+re-sync. A camera setup corrects itself in the background, and a sensors-only one is re-aligned by
+running the wizard again from the menu; a one-tap remedy in between was a third path to maintain
+that neither case needs. `AlignmentSource.RE_SYNC` survives only because `AlignmentStore` persists
+the name verbatim and an unknown value fails the whole model's decode.
 
 **Invariant**: each `AlignmentPoint.skyDirection` is computed *at that point's own capture time*,
 never recomputed later at model-solve time — the sky moves ~15"/s, so doing otherwise bakes sky
@@ -141,19 +165,57 @@ rotation into the fit. See the doc comment on `AlignmentPoint` before touching t
 ### Pointing fusion
 
 `PointingService` combines the continuous relative sensor stream with exactly one
-`AbsoluteReference`. Two implementations exist, combined by `PrioritizedAbsoluteReference`
-(preferred one wins outright, never blended):
+`AbsoluteReference`. Three implementations exist, combined as
+`Prioritized(Freshest(auto, alignment), compass)`:
 
-- `AlignmentAbsoluteReference` — the star-alignment model, including plate solves applied on top
-  of it. Established once per sync.
+- `AutoPlateSolveRefiner` — live plate solves, running only while `GuidanceScreen` is up under
+  `AlignmentType.PLATE_SOLVE`. See below.
+- `AlignmentAbsoluteReference` — the stored star-alignment model. Established once per wizard run,
+  plus the background refiner's first success (persisted for a warm start).
 - `CompassAbsoluteReference` — the magnetometer fallback, so a user with no alignment gets a
   roughly-right arrow instead of a "Not aligned" wall. Self-refreshing on every sensor reading.
 
-`AbsoluteReferenceState.origin` is what screens key off to tell the two apart —
+**The two fits are ranked by age, the compass by priority.** `FreshestAbsoluteReference` picks the
+more recently established of the first two, because neither is categorically better and a fixed
+priority gets one of the two directions wrong: a stale background solve would shadow an alignment
+the user just finished, and the reverse ordering would let an hours-old star fit shadow a solve from
+ten seconds ago. The compass cannot
+join that comparison — it re-establishes itself on every sensor reading, so it would always be the
+freshest thing there — and stays a strict `PrioritizedAbsoluteReference` fallback.
+
+`AbsoluteReferenceState.origin` is what screens key off to tell a real fit from the compass —
 `uncertaintyDegrees` cannot, since a star fit with a poor residual is still a star fit. Compass
 mode is the *only* thing that warrants telling the user the whole solution is provisional, and
-`GuidanceScreen` swaps its sync-age line and "Sync on this object" chip for a rough banner and
-an "Align" chip when it is active.
+`GuidanceScreen` shows a "Rough — compass only" banner when it is active and nothing at all
+otherwise. `AutoPlateSolveRefiner` reports `STAR_ALIGNMENT` rather than a third origin value: a
+plate solve *is* a real 3-DOF fit, and which kind of fit produced a reference is deliberately not a
+distinction the UI draws.
+
+### Background plate solving
+
+Under `AlignmentType.PLATE_SOLVE`, `AutoPlateSolveRefiner` photographs the sky and re-solves it
+whenever the telescope holds still, re-anchoring the sensor stream without telling the user —
+pointing stays smooth off the sensors between solves and silently re-truths itself on each one.
+
+- **Stillness** (`StillnessTracker`, 1° over 2 s) is measured against an *anchor*, not the previous
+  reading, so a slow drift can't accumulate into a false "still". It **polls** the sensor rather
+  than collecting it: `StateFlow` conflates and drops equal values, so a perfectly still phone can
+  stop emitting entirely. Elapsed time is wall-clock — `DeviceOrientation.timestampMillis` carries
+  the platform sensor event's own monotonic clock, sharing neither base nor unit with epoch time.
+- **The loop runs on the container's scope**, started/stopped by a `DisposableEffect` in
+  `GuidanceScreen` (`setAutoPlateSolveActive`) — never a `LaunchedEffect` owning the coroutine, or
+  a recomposition could cancel an in-flight camera capture.
+- **Nothing is persisted per solve.** Only the first success writes through `saveAlignment`, for a
+  warm start next launch; every later one lives in the flow alone. Deactivating keeps the last
+  published value — the fit is still true after leaving guidance.
+- **Nobody reviews these solves**, so `MAX_ACCEPTED_CORRECTION_DEGREES` (15°, the search radius —
+  a solve cannot legitimately claim to have found something further away than it looked) rejects
+  the implausible ones. A wrong `CameraMounting` preset is the case it exists for: it yields a
+  correction that looks fine except for its size.
+- **Cadence is a gap, not a period**: `SOLVE_INTERVAL_MILLIS` starts after the previous solve
+  finishes, so a real cycle is that plus the hold, the exposure, opening the camera, and the solve
+  itself — expect a refresh every ~10-20 s on a still scope, not every 5. This loop is
+  `attemptPlateSolve`'s only caller, and it is serial by construction.
 
 ### Guidance math
 
@@ -199,11 +261,24 @@ Stock **Material 3** — prefer default component styling over custom looks.
   at the eyepiece) — everywhere else, colors come from `MaterialTheme.colorScheme`.
 - **Action buttons** (Save / Sync / etc.) are wrap-content, centered — `Row(Modifier.fillMaxWidth(),
   horizontalArrangement = Arrangement.Center)`.
-- **`GuidingMode` is app-wide and surfaced app-wide** — the same `GuidingModeButton` sits in
-  `MapScreen`'s, `GuidanceScreen`'s and `AlignmentScreen`'s bottom toolbars, all writing the one
-  `AppContainer.guidingMode`. Anything reporting the *phone's* alignment state must gate on the
-  mode: `MapScreen`'s chip says "Not aligned" only under `PHONE`, since under `TELESCOPE` the
-  mount supplies pointing and a phone fit nothing uses is not worth nagging about.
+- **One bottom-bar shape everywhere** (`AppBottomBar`): the hamburger menu and a divider, both
+  constant, then the screen's own context actions, with `ToolbarExitButton` right-aligning itself
+  behind its own divider. Actions belonging to the *app* rather than the screen (Align, Night
+  wizard, Settings) live in the menu; a toolbar only shows what applies where the user is. The menu
+  badges itself when the phone still needs aligning, since burying that state behind a closed menu
+  would otherwise lose the at-a-glance cue.
+- **Map controls are map controls** — `MapFollowZoomControls` carries follow, zoom in/out and the
+  object filter, overlaid on every screen that shows a `SkyMap`. What the map draws is a property
+  of the map, not of the screen around it.
+- **Search opens over the screen that launched it and returns to it** — `App.kt`'s `when` matches
+  `showSearch` ahead of guidance and the wizard, and `onSelectResult` only marks the target and
+  closes Search, so the `when` falls through to whatever was underneath.
+- **Guiding is phone-only for now, though mount connection is not.** `AppBottomBar`'s
+  `SHOW_MODE_MENU_ITEM` hides the Mode menu entry and `selectedGuidingMode` is seeded to `PHONE`, so
+  `GuidingMode.TELESCOPE` is unreachable — but every telescope feature stays compiled and wired
+  behind that one flag. The Telescope menu entry itself (`SHOW_TELESCOPE_ENTRIES`) is unhidden:
+  connecting to a mount and running its own alignment is useful on its own even while guiding stays
+  phone-driven.
 - **Location is a hard prerequisite** — Search, Guidance, and Alignment all gate on
   `LocationResolver.resolved` being non-null rather than rendering altitudes from a silent default.
 

@@ -40,6 +40,7 @@ import com.astrocompass.catalog.CatalogRepository
 import com.astrocompass.catalog.CatalogSearch
 import com.astrocompass.catalog.SearchCategory
 import com.astrocompass.catalog.SkyObject
+import com.astrocompass.catalog.searchDisplayLabel
 
 private const val MAGNITUDE_LIMIT_MIN = 1f
 private const val MAGNITUDE_LIMIT_MAX = 16f
@@ -144,7 +145,7 @@ fun SearchScreen(
                 else -> LazyColumn(Modifier.padding(top = 8.dp)) {
                     items(results, key = { it.id }) { obj ->
                         ListItem(
-                            headlineContent = { Text(obj.displayName) },
+                            headlineContent = { Text(obj.searchDisplayLabel()) },
                             supportingContent = if (obj.magnitude.isNaN()) null else {
                                 { Text("mag ${formatMagnitude(obj.magnitude)}") }
                             },

@@ -11,28 +11,18 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.NavigateBefore
 import androidx.compose.material.icons.automirrored.filled.NavigateNext
-import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.Check
-import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.Explore
 import androidx.compose.material.icons.filled.GpsFixed
-import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Stop
-import androidx.compose.material.icons.filled.SwapHoriz
-import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material.icons.filled.Tune
-import androidx.compose.material3.BottomAppBar
 import androidx.compose.material3.Button
-import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -42,8 +32,8 @@ import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
-import androidx.compose.material3.VerticalDivider
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -53,23 +43,20 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.window.Dialog
 import com.astrocompass.astro.Vector3
 import com.astrocompass.astro.coords.HorizontalCoordinates
 import com.astrocompass.astro.time.currentEpochMillis
 import com.astrocompass.catalog.CatalogRepository
 import com.astrocompass.catalog.MapObjectFilter
 import com.astrocompass.catalog.SkyObject
+import com.astrocompass.catalog.searchDisplayLabel
 import com.astrocompass.guiding.AbsoluteReferenceState
 import com.astrocompass.guiding.GuidanceCalculator
-import com.astrocompass.guiding.GuidingMode
-import com.astrocompass.guiding.PlateSolveAttempt
 import com.astrocompass.guiding.PointingOrigin
 import com.astrocompass.guiding.ReferenceOrigin
 import com.astrocompass.guiding.SkyPointingSource
@@ -77,10 +64,13 @@ import com.astrocompass.guiding.currentHorizontal
 import com.astrocompass.location.ObserverLocation
 import com.astrocompass.telescope.SlewOutcome
 import com.astrocompass.telescope.SlewRatePreset
+import com.astrocompass.ui.components.AppBottomBar
+import com.astrocompass.ui.components.AppMenuActions
 import com.astrocompass.ui.components.DeltaBar
-import com.astrocompass.ui.components.GuidingModeButton
 import com.astrocompass.ui.components.MAP_ZOOM_STEP_FACTOR
+import com.astrocompass.ui.components.MapFilterSheet
 import com.astrocompass.ui.components.MapFollowZoomControls
+import com.astrocompass.ui.components.ToolbarCancelButton
 import com.astrocompass.ui.components.mapOverlayScrim
 import com.astrocompass.ui.components.SkyMap
 import com.astrocompass.ui.components.SkyMapGuidancePath
@@ -89,32 +79,20 @@ import com.astrocompass.ui.components.TelescopeOptionsSheet
 import com.astrocompass.ui.components.ToolbarActionButton
 import com.astrocompass.ui.components.rememberSkyMapSnapshot
 import com.astrocompass.ui.skymap.SkyMapViewport
-import com.astrocompass.ui.theme.GuidancePathBlue
+import com.astrocompass.ui.theme.GuidancePathAmber
 import com.astrocompass.ui.theme.OnTargetGreen
 import com.astrocompass.ui.theme.TelescopeBlue
+import com.astrocompass.ui.theme.WarningAmber
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 
 private const val UPDATE_INTERVAL_MS = 50L
 private const val CATALOG_REFRESH_INTERVAL_MS = 5_000L
-private const val STABILIZATION_MILLIS = 2_000L
 
 // Smaller than headlineSmall's default 24.sp so the readout takes up less of the map without the
 // target marker underneath it staying hidden as long.
 private val ANGLE_TEXT_SIZE = 18.sp
-
-private val WarningAmber = Color(0xFFFFA000)
-
-/** Local UI state for the "Platesolve" flow -- not reachable until [GuidanceScreen] has already
- *  gated on being aligned, since [com.astrocompass.AppContainer.attemptPlateSolve] requires an
- *  existing pointing direction to seed the search from. */
-private sealed interface PlateSolveUiState {
-    data object Stabilizing : PlateSolveUiState
-    data object Solving : PlateSolveUiState
-    data class Result(val attempt: PlateSolveAttempt) : PlateSolveUiState
-    data object Failed : PlateSolveUiState
-}
 
 @Composable
 fun GuidanceScreen(
@@ -133,32 +111,27 @@ fun GuidanceScreen(
     location: ObserverLocation,
     catalogRepository: CatalogRepository,
     onTargetToleranceDegrees: Double,
-    onSyncOnThisObject: () -> Unit,
-    onPlateSolve: suspend () -> PlateSolveAttempt?,
-    onApplyPlateSolve: (PlateSolveAttempt) -> Unit,
-    onOpenAlignment: () -> Unit,
-    onOpenSettings: () -> Unit,
+    /** Runs the background solve loop for as long as this screen is up -- a no-op unless the setup
+     *  was aligned with a camera (see [com.astrocompass.AppContainer.setAutoPlateSolveActive]). */
+    onAutoPlateSolveActive: (Boolean) -> Unit,
+    menu: AppMenuActions,
+    onOpenSearch: () -> Unit,
     onExitGuiding: () -> Unit,
     // Only ever called while pointingSource.origin is TELESCOPE (see the bottom toolbar) -- a
     // connected mount's own reported position is what "on target" means here, same target the
     // arrow already guides toward.
     onGoto: suspend () -> SlewOutcome,
     onAbortSlew: suspend () -> Unit,
-    // Which source drives the arrow. pointingSource already follows this (see
-    // SelectablePointingSource), so nothing below branches on it -- it is here only to label the
-    // mode button and to tell the picker which entry is current.
-    guidingMode: GuidingMode,
-    onGuidingModeChange: (GuidingMode) -> Unit,
-    isTelescopeConnected: Boolean,
     slewRatePreset: SlewRatePreset,
     onSlewRatePresetChange: suspend (SlewRatePreset) -> Unit,
     onReadTracking: suspend () -> Boolean?,
     onSetTracking: suspend (Boolean) -> Boolean,
     showObjectPhotos: Boolean,
+    dimBelowHorizon: Boolean,
     mapObjectFilter: MapObjectFilter,
+    onMapObjectFilterChange: (MapObjectFilter) -> Unit,
     // Night Wizard mode: non-null wizardProgress swaps the header/toolbar to walk through a fixed
-    // object list instead of today's single-target Platesolve/Sync/Align/Exit (or GOTO/Abort)
-    // layout. `first` is the 1-based current index, `second` the total count.
+    // object list instead of the single-target Search/Exit (or GOTO/Abort/Options) layout. `first` is the 1-based current index, `second` the total count.
     wizardProgress: Pair<Int, Int>? = null,
     onNextObject: () -> Unit = {},
     onPreviousObject: () -> Unit = {},
@@ -183,6 +156,13 @@ fun GuidanceScreen(
             delay(UPDATE_INTERVAL_MS)
             now = currentEpochMillis()
         }
+    }
+
+    // A DisposableEffect, not a LaunchedEffect: the loop belongs to the container's own scope and
+    // owns an in-flight camera capture, so a recomposition here must not be able to cancel it.
+    DisposableEffect(Unit) {
+        onAutoPlateSolveActive(true)
+        onDispose { onAutoPlateSolveActive(false) }
     }
 
     // The map's catalog snapshot is rebuilt on its own, much slower cadence than `now` above --
@@ -216,29 +196,11 @@ fun GuidanceScreen(
         mapViewport
     }
 
-    // The run token is deliberately separate from the displayed state: a LaunchedEffect must never
-    // reassign its own key, or Compose cancels the running effect the moment it advances a phase --
-    // taking the in-flight capture, and its timeout, down with it. Only starting or cancelling a
-    // run touches the key; phase changes touch plateSolveState alone.
-    var plateSolveRunId by remember { mutableStateOf<Int?>(null) }
-    var plateSolveState by remember { mutableStateOf<PlateSolveUiState?>(null) }
-    val closePlateSolve = {
-        plateSolveRunId = null
-        plateSolveState = null
-    }
-    LaunchedEffect(plateSolveRunId) {
-        if (plateSolveRunId == null) return@LaunchedEffect
-        plateSolveState = PlateSolveUiState.Stabilizing
-        delay(STABILIZATION_MILLIS)
-        plateSolveState = PlateSolveUiState.Solving
-        val attempt = onPlateSolve()
-        plateSolveState = if (attempt != null) PlateSolveUiState.Result(attempt) else PlateSolveUiState.Failed
-    }
-
     // Tracking is read from the mount each time the options sheet opens rather than polled --
     // nothing else in the app reacts to it, so a second periodic command alongside the position
     // poll would buy nothing. Null means "not answered yet", which is what the sheet renders as a
     // spinner instead of an assumed state.
+    var showFilterSheet by remember { mutableStateOf(false) }
     var showTelescopeOptions by remember { mutableStateOf(false) }
     var trackingEnabled by remember { mutableStateOf<Boolean?>(null) }
     var trackingError by remember { mutableStateOf<String?>(null) }
@@ -263,16 +225,13 @@ fun GuidanceScreen(
         snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
             TopAppBar(
-                title = { Text(target.displayName) },
+                title = { Text(target.searchDisplayLabel()) },
                 navigationIcon = {
                     if (wizardProgress != null) {
                         IconButton(onClick = onBackToObjectList) {
                             Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back to the object list")
                         }
                     }
-                },
-                actions = {
-                    IconButton(onClick = onOpenSettings) { Icon(Icons.Default.Settings, contentDescription = "Settings") }
                 },
             )
         },
@@ -288,111 +247,84 @@ fun GuidanceScreen(
                         modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
                     )
                 }
-                BottomAppBar {
+                AppBottomBar(menu) {
                     if (wizardProgress != null) {
                         val (index, total) = wizardProgress
-                        Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                            ToolbarActionButton(
-                                icon = Icons.AutoMirrored.Filled.NavigateBefore,
-                                label = "Prev",
-                                enabled = index > 1,
-                                onClick = onPreviousObject,
-                                modifier = Modifier.weight(1f),
-                            )
-                            ToolbarActionButton(
-                                icon = Icons.AutoMirrored.Filled.NavigateNext,
-                                label = "Next",
-                                enabled = index < total,
-                                onClick = onNextObject,
-                                modifier = Modifier.weight(1f),
-                            )
-                            ToolbarActionButton(
-                                icon = Icons.Default.Tune,
-                                label = "Options",
-                                onClick = onOpenWizardOptions,
-                                modifier = Modifier.weight(1f),
-                            )
-                            VerticalDivider(Modifier.height(32.dp).padding(horizontal = 4.dp))
-                            ToolbarActionButton(icon = Icons.Default.Close, label = "Exit", onClick = onExitGuiding)
-                        }
+                        // Search is deliberately absent here: a searched target doesn't fit the
+                        // wizard's fixed Prev/Next list, the same reason map-tap retargeting is
+                        // gated off below.
+                        ToolbarActionButton(
+                            icon = Icons.AutoMirrored.Filled.NavigateBefore,
+                            label = "Prev",
+                            enabled = index > 1,
+                            onClick = onPreviousObject,
+                            modifier = Modifier.weight(1f),
+                        )
+                        ToolbarActionButton(
+                            icon = Icons.AutoMirrored.Filled.NavigateNext,
+                            label = "Next",
+                            enabled = index < total,
+                            onClick = onNextObject,
+                            modifier = Modifier.weight(1f),
+                        )
+                        ToolbarActionButton(
+                            icon = Icons.Default.Tune,
+                            label = "Options",
+                            onClick = onOpenWizardOptions,
+                            modifier = Modifier.weight(1f),
+                        )
+                        ToolbarCancelButton(onExitGuiding)
                     } else {
-                        Row(
-                            Modifier.fillMaxWidth().padding(horizontal = 8.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            GuidingModeButton(
-                                mode = guidingMode,
-                                telescopeConnected = isTelescopeConnected,
-                                onModeChange = onGuidingModeChange,
-                            )
-                            VerticalDivider(Modifier.height(32.dp).padding(horizontal = 4.dp))
-                            Row(Modifier.weight(1f)) {
-                                if (showGuidanceActions) {
-                                    when (pointingOrigin) {
-                                        // Platesolve/Sync/Align all correct the *phone's* alignment
-                                        // model -- meaningless while a mount drives guidance, so
-                                        // GOTO/Abort/Options take their place instead.
-                                        PointingOrigin.TELESCOPE -> {
-                                            ToolbarActionButton(
-                                                icon = Icons.Default.GpsFixed,
-                                                label = "GOTO",
-                                                onClick = {
-                                                    telescopeSlewing = true
-                                                    scope.launch {
-                                                        when (val outcome = onGoto()) {
-                                                            is SlewOutcome.Rejected -> {
-                                                                telescopeSlewing = false
-                                                                snackbarHostState.showSnackbar(outcome.reason)
-                                                            }
-                                                            SlewOutcome.NoConnection -> {
-                                                                telescopeSlewing = false
-                                                                snackbarHostState.showSnackbar("Telescope not connected")
-                                                            }
-                                                            SlewOutcome.Started -> {}
-                                                        }
+                        ToolbarActionButton(icon = Icons.Default.Search, label = "Search", onClick = onOpenSearch)
+                        // Nothing here corrects the phone's own alignment: a camera setup
+                        // re-anchors itself in the background (see onAutoPlateSolveActive) and a
+                        // sensors-only one is re-aligned through the wizard, in the menu.
+                        if (showGuidanceActions) {
+                            when (pointingOrigin) {
+                                PointingOrigin.TELESCOPE -> {
+                                    ToolbarActionButton(
+                                        icon = Icons.Default.GpsFixed,
+                                        label = "GOTO",
+                                        onClick = {
+                                            telescopeSlewing = true
+                                            scope.launch {
+                                                when (val outcome = onGoto()) {
+                                                    is SlewOutcome.Rejected -> {
+                                                        telescopeSlewing = false
+                                                        snackbarHostState.showSnackbar(outcome.reason)
                                                     }
-                                                },
-                                            )
-                                            ToolbarActionButton(
-                                                icon = Icons.Default.Stop,
-                                                label = "Abort",
-                                                onClick = { scope.launch { onAbortSlew() }; telescopeSlewing = false },
-                                            )
-                                            ToolbarActionButton(
-                                                icon = Icons.Default.Tune,
-                                                label = "Options",
-                                                onClick = { showTelescopeOptions = true },
-                                            )
-                                        }
-
-                                        PointingOrigin.PHONE_SENSORS -> {
-                                            ToolbarActionButton(
-                                                icon = Icons.Default.CameraAlt,
-                                                label = "Platesolve",
-                                                onClick = { plateSolveRunId = (plateSolveRunId ?: 0) + 1 },
-                                            )
-                                            when (activeReference?.origin) {
-                                                ReferenceOrigin.STAR_ALIGNMENT ->
-                                                    ToolbarActionButton(icon = Icons.Default.Sync, label = "Sync Az", onClick = onSyncOnThisObject)
-                                                ReferenceOrigin.COMPASS, null ->
-                                                    ToolbarActionButton(icon = Icons.Default.Explore, label = "Align", onClick = onOpenAlignment)
+                                                    SlewOutcome.NoConnection -> {
+                                                        telescopeSlewing = false
+                                                        snackbarHostState.showSnackbar("Telescope not connected")
+                                                    }
+                                                    SlewOutcome.Started -> {}
+                                                }
                                             }
-                                        }
-                                    }
+                                        },
+                                    )
+                                    ToolbarActionButton(
+                                        icon = Icons.Default.Stop,
+                                        label = "Abort",
+                                        onClick = { scope.launch { onAbortSlew() }; telescopeSlewing = false },
+                                    )
+                                    ToolbarActionButton(
+                                        icon = Icons.Default.Tune,
+                                        label = "Options",
+                                        onClick = { showTelescopeOptions = true },
+                                    )
                                 }
+
+                                PointingOrigin.PHONE_SENSORS -> Unit
                             }
-                            if (showGuidanceActions) {
-                                VerticalDivider(Modifier.height(32.dp).padding(horizontal = 4.dp))
-                            }
-                            ToolbarActionButton(icon = Icons.Default.Close, label = "Exit", onClick = onExitGuiding)
                         }
+                        ToolbarCancelButton(onExitGuiding)
                     }
                 }
             }
         },
     ) { padding ->
         if (currentPointing == null || phoneNeedsAlignment) {
-            NotReadyContent(pointingOrigin, onOpenAlignment, Modifier.padding(padding))
+            NotReadyContent(pointingOrigin, menu.onOpenAlignment, Modifier.padding(padding))
             return@Scaffold
         }
 
@@ -423,13 +355,14 @@ fun GuidanceScreen(
                 constellationLines = snapshot.constellationLines,
                 northOffsetDirections = snapshot.northOffsetDirections,
                 showObjectPhotos = showObjectPhotos,
+                dimBelowHorizon = dimBelowHorizon,
                 // In Telescope mode the current-pointing marker already sits exactly where the
                 // mount reports, so it takes the blue itself rather than a second marker being
                 // stacked on the same spot -- on-target green still wins over both.
                 guidancePath = SkyMapGuidancePath(
                     start = currentPointing!!,
                     end = targetDirection,
-                    color = GuidancePathBlue,
+                    color = GuidancePathAmber,
                 ),
                 markers = listOfNotNull(
                     SkyMapMarker(direction = targetDirection, color = MaterialTheme.colorScheme.primary, label = target.displayName),
@@ -440,6 +373,10 @@ fun GuidanceScreen(
                             pointingOrigin == PointingOrigin.TELESCOPE -> TelescopeBlue
                             else -> MaterialTheme.colorScheme.secondary
                         },
+                        // In Telescope mode this marker *is* the telescope's own position (see the
+                        // dedup above), not the phone's -- see the same labeling in MapScreen.
+                        label = if (pointingOrigin == PointingOrigin.TELESCOPE) "Telescope" else "Phone",
+                        labelAbove = true,
                     ),
                     telescopeDirection
                         ?.takeIf { pointingOrigin != PointingOrigin.TELESCOPE }
@@ -453,6 +390,7 @@ fun GuidanceScreen(
                 onEnableFollow = { followPointing = true },
                 onZoomIn = { mapViewport = mapViewport.zoomedBy(MAP_ZOOM_STEP_FACTOR) },
                 onZoomOut = { mapViewport = mapViewport.zoomedBy(1f / MAP_ZOOM_STEP_FACTOR) },
+                onOpenFilter = { showFilterSheet = true },
                 modifier = Modifier.align(Alignment.TopEnd).padding(top = 8.dp, end = 8.dp),
             )
 
@@ -499,14 +437,11 @@ fun GuidanceScreen(
         }
     }
 
-    val state = plateSolveState
-    val origin = reference?.origin
-    if (state != null && origin != null) {
-        PlateSolveDialog(
-            state = state,
-            origin = origin,
-            onApply = { attempt -> onApplyPlateSolve(attempt); closePlateSolve() },
-            onDismiss = closePlateSolve,
+    if (showFilterSheet) {
+        MapFilterSheet(
+            filter = mapObjectFilter,
+            onFilterChange = onMapObjectFilterChange,
+            onDismiss = { showFilterSheet = false },
         )
     }
 
@@ -535,13 +470,10 @@ fun GuidanceScreen(
     }
 }
 
-/** How the current pointing solution was obtained -- the action that improves it (GOTO/Abort for
- *  a mount, Sync for a star fit, Align for the compass fallback) lives in the bottom toolbar, see
- *  [GuidanceScreen]'s `showGuidanceActions` block. [reference] describes the *phone's* alignment
+/** How the current pointing solution was obtained. [reference] describes the *phone's* alignment
  *  and is only consulted under [PointingOrigin.PHONE_SENSORS] -- a connected mount needs none of
- *  that, see [PointingOrigin]'s doc. Renders nothing once a star alignment is in effect -- the sync
- *  age isn't worth a permanent overlay on the map, and "Sync on this object" in the bottom toolbar
- *  already covers refreshing it. */
+ *  that, see [PointingOrigin]'s doc. Renders nothing once a real fit is in effect: only the compass
+ *  fallback warrants a permanent overlay saying the whole solution is provisional. */
 @Composable
 private fun ReferenceStatusSection(
     pointingOrigin: PointingOrigin,
@@ -570,7 +502,7 @@ private fun CompassModeText() {
     Column {
         Text("Rough — compass only", color = WarningAmber, style = MaterialTheme.typography.bodyMedium)
         Text(
-            "Align on stars for real accuracy.",
+            "Calibrate for real accuracy.",
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             style = MaterialTheme.typography.bodySmall,
         )
@@ -594,111 +526,18 @@ private fun NotReadyContent(pointingOrigin: PointingOrigin, onOpenAlignment: () 
             }
 
             PointingOrigin.PHONE_SENSORS -> {
-                Text("Not aligned", style = MaterialTheme.typography.titleLarge)
+                Text("Not calibrated", style = MaterialTheme.typography.titleLarge)
                 Text(
-                    "Sync on at least one star before the app can point you toward anything.",
+                    "Calibrate the phone before it can point you toward anything.",
                     style = MaterialTheme.typography.bodyMedium,
                     modifier = Modifier.padding(top = 8.dp, bottom = 24.dp),
                 )
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
-                    Button(onClick = onOpenAlignment) { Text("Align now") }
+                    Button(onClick = onOpenAlignment) { Text("Calibrate now") }
                 }
             }
         }
     }
 }
-
-/** Walks through the "Platesolve" flow: a stabilization pause (so the tap that opened this dialog
- *  doesn't blur the photo), then solving, then a result the user must explicitly apply or
- *  discard -- never applied automatically, since a plausible-looking but wrong
- *  [com.astrocompass.guiding.CameraMounting] preset can only be caught by the user noticing the
- *  correction looks too large. */
-@Composable
-private fun PlateSolveDialog(
-    state: PlateSolveUiState,
-    origin: ReferenceOrigin,
-    onApply: (PlateSolveAttempt) -> Unit,
-    onDismiss: () -> Unit,
-) {
-    Dialog(onDismissRequest = onDismiss) {
-        Card(Modifier.fillMaxWidth()) {
-            Column(Modifier.padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                when (state) {
-                    is PlateSolveUiState.Stabilizing -> {
-                        Text("Hold steady...", style = MaterialTheme.typography.titleMedium)
-                        Text(
-                            "Point the camera at open sky. Capturing shortly.",
-                            style = MaterialTheme.typography.bodyMedium,
-                            modifier = Modifier.padding(top = 8.dp, bottom = 16.dp),
-                        )
-                        CircularProgressIndicator(Modifier.padding(bottom = 16.dp))
-                        OutlinedButton(onClick = onDismiss) { Text("Cancel") }
-                    }
-
-                    is PlateSolveUiState.Solving -> {
-                        Text("Solving...", style = MaterialTheme.typography.titleMedium)
-                        Text(
-                            "This can take a few seconds against a dense star field.",
-                            style = MaterialTheme.typography.bodyMedium,
-                            modifier = Modifier.padding(top = 8.dp, bottom = 16.dp),
-                        )
-                        CircularProgressIndicator(Modifier.padding(bottom = 16.dp).size(32.dp))
-                        OutlinedButton(onClick = onDismiss) { Text("Cancel") }
-                    }
-
-                    is PlateSolveUiState.Result -> {
-                        val attempt = state.attempt
-                        Text("Plate solve result", style = MaterialTheme.typography.titleMedium)
-                        Text(
-                            "${attempt.result.matchedStarCount} stars matched, " +
-                                "${formatDegrees(attempt.result.rmsResidualDegrees)}° RMS",
-                            style = MaterialTheme.typography.bodyMedium,
-                            modifier = Modifier.padding(top = 8.dp),
-                        )
-                        Text(
-                            "Correction: ${formatDegrees(attempt.correctionDegrees)}°",
-                            style = MaterialTheme.typography.headlineSmall,
-                            modifier = Modifier.padding(top = 8.dp, bottom = 4.dp),
-                        )
-                        // What counts as a suspicious correction depends entirely on what is
-                        // being corrected: a star fit only drifts, while the compass fallback
-                        // starts out wrong, so the same number means opposite things.
-                        Text(
-                            when (origin) {
-                                ReferenceOrigin.STAR_ALIGNMENT ->
-                                    "A plausible drift correction is a few degrees. Tens of " +
-                                        "degrees usually means the Camera mounting setting is wrong."
-
-                                ReferenceOrigin.COMPASS ->
-                                    "This replaces the rough compass estimate with a real " +
-                                        "alignment, so a correction of tens of degrees is normal here."
-                            },
-                            style = MaterialTheme.typography.bodySmall,
-                            modifier = Modifier.padding(bottom = 16.dp),
-                        )
-                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
-                            OutlinedButton(onClick = onDismiss, modifier = Modifier.padding(end = 12.dp)) { Text("Discard") }
-                            Button(onClick = { onApply(attempt) }) { Text("Apply") }
-                        }
-                    }
-
-                    is PlateSolveUiState.Failed -> {
-                        Text("Plate solve failed", style = MaterialTheme.typography.titleMedium)
-                        Text(
-                            "Not enough stars matched. Try open sky, away from clouds or light " +
-                                "pollution, and hold the phone steady.",
-                            style = MaterialTheme.typography.bodyMedium,
-                            modifier = Modifier.padding(top = 8.dp, bottom = 16.dp),
-                        )
-                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
-                            Button(onClick = onDismiss) { Text("OK") }
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
 
 private fun formatDegrees(value: Double): String = (kotlin.math.round(value * 10) / 10).toString()

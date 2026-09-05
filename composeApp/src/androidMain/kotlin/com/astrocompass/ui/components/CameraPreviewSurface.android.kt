@@ -49,6 +49,11 @@ private const val TARGET_PREVIEW_PIXELS = 1_000_000
  */
 private const val PREVIEW_ZOOM_FACTOR = 2f
 
+/** How long to wait before retrying an open whose session came back without its output -- long
+ *  enough for the previous [CameraDevice]'s own teardown (what this loses the race to) to finish. */
+private const val REOPEN_DELAY_MILLIS = 300L
+private const val MAX_REOPEN_ATTEMPTS = 3
+
 @Composable
 actual fun CameraPreviewSurface(
     cameraId: String?,
@@ -145,12 +150,19 @@ private class CameraPreviewSession(private val context: Context) {
     private var device: CameraDevice? = null
     private var captureSession: CameraCaptureSession? = null
 
+    /** The [Surface] the live session was configured with, kept only so [closeCamera] can release
+     *  it -- one is created per camera open, and nothing else would ever hand it back. */
+    private var previewSurface: Surface? = null
+
     /** Null until a camera is open and its geometry known -- there is no sane placeholder, and
      *  laying the preview out against a guessed size is exactly how it ends up distorted. */
     private var previewSize: Size? = null
     private var sensorOrientation = 0
     private var pan = Offset.Zero
     private var released = false
+
+    /** How many times [scheduleReopen] has retried since the last preview that actually started. */
+    private var reopenAttempts = 0
 
     private val surfaceTextureListener = object : TextureView.SurfaceTextureListener {
         override fun onSurfaceTextureAvailable(surface: SurfaceTexture, width: Int, height: Int) {
@@ -279,7 +291,7 @@ private class CameraPreviewSession(private val context: Context) {
     }
 
     private fun openCamera(cameraId: String, physicalCameraId: String?) {
-        val surface = surfaceTexture ?: return
+        val texture = surfaceTexture ?: return
         if (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
             Log.w(TAG, "openCamera: CAMERA permission not granted")
             return
@@ -297,7 +309,7 @@ private class CameraPreviewSession(private val context: Context) {
         sensorOrientation = targetCharacteristics.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 0
         val chosenSize = pickPreviewSize(targetCharacteristics)
         previewSize = chosenSize
-        surface.setDefaultBufferSize(chosenSize.width, chosenSize.height)
+        texture.setDefaultBufferSize(chosenSize.width, chosenSize.height)
         pan = clampPan(pan)
         applyLayout()
 
@@ -306,16 +318,29 @@ private class CameraPreviewSession(private val context: Context) {
                 cameraId,
                 object : CameraDevice.StateCallback() {
                     // openCamera is async, so by the time this lands the session may have moved on
-                    // to a different camera (or been released) -- close this one instead of
-                    // adopting it, or it lingers as an orphaned "Active Camera Client" (see the
-                    // camerax-stallion-hang note) and can block a later plate-solve capture.
+                    // to a different camera, a different SurfaceTexture, or been released -- close
+                    // this one instead of adopting it, or it lingers as an orphaned "Active Camera
+                    // Client" (see the camerax-stallion-hang note) and can block a later
+                    // plate-solve capture.
+                    //
+                    // The texture check is not redundant with the id checks: leaving and re-entering
+                    // this step destroys the TextureView's SurfaceTexture and hands out a new one,
+                    // for the *same* camera id, and onSurfaceTextureDestroyed can't cancel an open
+                    // that hasn't landed yet (there is no device to close). Configuring a session
+                    // against the abandoned texture still reports onConfigured, but the surface is
+                    // dropped from the configuration -- so the repeating request below would target
+                    // a stream that doesn't exist, which camera2 throws on rather than ignores.
                     override fun onOpened(camera: CameraDevice) {
-                        if (released || cameraId != desiredCameraId || physicalCameraId != desiredPhysicalCameraId) {
+                        if (released ||
+                            cameraId != desiredCameraId ||
+                            physicalCameraId != desiredPhysicalCameraId ||
+                            texture !== surfaceTexture
+                        ) {
                             camera.close()
                             return
                         }
                         device = camera
-                        startPreview(camera, Surface(surface), physicalCameraId)
+                        startPreview(camera, Surface(texture), physicalCameraId)
                     }
 
                     override fun onDisconnected(camera: CameraDevice) {
@@ -336,23 +361,29 @@ private class CameraPreviewSession(private val context: Context) {
         }
     }
 
-    private fun startPreview(camera: CameraDevice, surface: Surface, physicalCameraId: String?) {
-        // Re-asserted here, immediately before the session is configured: TextureView sets the
-        // default buffer size to its own bounds whenever it is laid out, and applyLayout above
-        // deliberately resizes it -- so a layout pass between openCamera and this point would
-        // otherwise leave the stream configured at the view's size instead of a real, supported
-        // camera output size.
+    private fun startPreview(camera: CameraDevice, surface: Surface, physicalCameraId: String?) = runWhenLaidOut {
+        if (released || device != camera || !surface.isValid) return@runWhenLaidOut
+        // Re-asserted here, immediately before the session is configured, and only once the layout
+        // [applyLayout] asked for has actually happened: TextureView resets its SurfaceTexture's
+        // default buffer size to its own bounds on every layout pass, and camera2 takes a
+        // SurfaceTexture stream's size from that buffer. Asserting it while a layout was still
+        // pending left the view's size as the last word, so the camera configured a view-shaped
+        // stream and its frames reached the screen stretched.
         previewSize?.let { surfaceTexture?.setDefaultBufferSize(it.width, it.height) }
         val outputConfig = OutputConfiguration(surface).apply {
             if (physicalCameraId != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
                 setPhysicalCameraId(physicalCameraId)
             }
         }
+        previewSurface = surface
         camera.createCaptureSessionByOutputConfigurations(
             listOf(outputConfig),
             object : CameraCaptureSession.StateCallback() {
+                // `surface.isValid` covers the same hazard as onOpened's texture check, one step
+                // later: a SurfaceTexture released while this session was configuring leaves a
+                // surface the request can't resolve to a stream.
                 override fun onConfigured(session: CameraCaptureSession) {
-                    if (released || device != camera) {
+                    if (released || device != camera || !surface.isValid) {
                         session.close()
                         return
                     }
@@ -360,7 +391,27 @@ private class CameraPreviewSession(private val context: Context) {
                     val request = camera.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply {
                         addTarget(surface)
                     }.build()
-                    session.setRepeatingRequest(request, null, handler)
+                    try {
+                        session.setRepeatingRequest(request, null, handler)
+                        reopenAttempts = 0
+                    } catch (e: IllegalArgumentException) {
+                        // A session can report itself configured having silently dropped its output:
+                        // reopening a camera while the *previous* CameraDevice for that id is still
+                        // tearing down (leaving and re-entering this step in quick succession does
+                        // exactly that) leaves the request targeting a stream the device doesn't
+                        // have, which camera2 throws on rather than ignores. The surface, the device
+                        // and the texture are all still the live ones here -- there is nothing to
+                        // check that would have seen this coming, so the failure is caught and the
+                        // camera reopened, rather than left as a preview that can never get a frame.
+                        Log.w(TAG, "startPreview: session configured without its output; reopening", e)
+                        closeCamera()
+                        scheduleReopen()
+                    } catch (e: IllegalStateException) {
+                        // Same treatment for a session closed out from under this callback.
+                        Log.w(TAG, "startPreview: session already closed", e)
+                        closeCamera()
+                        scheduleReopen()
+                    }
                 }
 
                 override fun onConfigureFailed(session: CameraCaptureSession) {
@@ -371,11 +422,54 @@ private class CameraPreviewSession(private val context: Context) {
         )
     }
 
+    /**
+     * Runs [action] on the main thread once the [TextureView] has no layout pending, so a pass
+     * triggered by [applyLayout] can't land in the middle of it. [startPreview] is the caller that
+     * needs this: it arrives on the camera thread, and both halves of what it does -- setting the
+     * SurfaceTexture's buffer size and configuring the stream that reads it -- must sit on the same
+     * side of the layout that would otherwise rewrite that buffer size.
+     *
+     * Re-posts while a layout is still outstanding rather than assuming one loop is enough: a
+     * traversal is a Choreographer callback, so it isn't ordered against a plain posted Runnable.
+     */
+    private fun runWhenLaidOut(action: () -> Unit) {
+        val view = textureView ?: return
+        view.post(object : Runnable {
+            override fun run() {
+                if (released) return
+                if (view.isLayoutRequested) view.post(this) else action()
+            }
+        })
+    }
+
+    /** Retries the open behind [onConfigured]'s dropped-output failure, on the main thread because
+     *  [openCamera] resizes and lays out the [TextureView]. Bounded by [MAX_REOPEN_ATTEMPTS] so a
+     *  camera that fails this way every time (rather than losing one race to a closing device)
+     *  settles on a black preview instead of reopening forever; a successful start resets the
+     *  count, so a later, unrelated race gets its own retries. */
+    private fun scheduleReopen() {
+        if (released || reopenAttempts >= MAX_REOPEN_ATTEMPTS) return
+        reopenAttempts++
+        container?.postDelayed(
+            {
+                val cameraId = desiredCameraId
+                if (!released && cameraId != null && surfaceTexture != null && device == null) {
+                    openCamera(cameraId, desiredPhysicalCameraId)
+                }
+            },
+            REOPEN_DELAY_MILLIS,
+        )
+    }
+
     private fun closeCamera() {
         captureSession?.close()
         captureSession = null
         device?.close()
         device = null
+        // Only the Surface wrapper, never the SurfaceTexture behind it -- that one belongs to the
+        // TextureView, which releases it itself when it goes away.
+        previewSurface?.release()
+        previewSurface = null
     }
 
     /** The largest available preview size under [TARGET_PREVIEW_PIXELS], or the smallest available

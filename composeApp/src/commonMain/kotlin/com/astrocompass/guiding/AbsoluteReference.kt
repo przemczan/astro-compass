@@ -66,3 +66,28 @@ class PrioritizedAbsoluteReference(
         combine(preferred.current, fallback.current) { primary, secondary -> primary ?: secondary }
             .stateIn(scope, SharingStarted.Eagerly, preferred.current.value ?: fallback.current.value)
 }
+
+/**
+ * Whichever of [sources] was established most recently, ignoring the ones with nothing to say.
+ *
+ * For references that are *peers* -- every one of them a real fit, differing only in when it was
+ * made. A stored star alignment and a live plate solve are exactly that pair: neither is
+ * categorically better, so a fixed priority would either let a stale background solve shadow an
+ * alignment the user just finished, or let an hours-old star fit shadow a solve from ten seconds
+ * ago. Freshness answers both without either side knowing the other exists.
+ *
+ * Not for [CompassAbsoluteReference], which re-establishes itself on every sensor reading and so
+ * would always be the freshest thing here -- it stays a strict fallback (see
+ * [PrioritizedAbsoluteReference]).
+ */
+class FreshestAbsoluteReference(
+    scope: CoroutineScope,
+    private vararg val sources: AbsoluteReference,
+) : AbsoluteReference {
+    override val current: StateFlow<AbsoluteReferenceState?> =
+        combine(sources.map { it.current }) { states -> states.freshest() }
+            .stateIn(scope, SharingStarted.Eagerly, sources.map { it.current.value }.toTypedArray().freshest())
+
+    private fun Array<out AbsoluteReferenceState?>.freshest(): AbsoluteReferenceState? =
+        filterNotNull().maxByOrNull { it.establishedAtEpochMillis }
+}

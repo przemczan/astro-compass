@@ -221,19 +221,26 @@ object SkyMapScene {
     }
 
     /** Governs every [SkyObject] except [StarObject] (see [starMagnitudeLimitFor] for that curve) --
-     *  in practice this means DSOs, since [SolarSystemObject] always passes via its sentinel. Wide
-     *  views would be cluttered by every mag-7 DSO; narrow views should show everything the catalog
-     *  has. Linear in field of view between those two extremes, reaching the 16.0 ceiling by
-     *  [narrowFov] -- deliberately a moderate 20°, not some much smaller angle: dso.bin's median
-     *  magnitude is ~14, so a curve that only opened up at an extreme close-in zoom left
-     *  galaxies/nebulae sparse at any FOV a user would actually browse at. 20° still reaches
-     *  [SkyMapViewport.DEFAULT]'s 90° FOV at magnitude ~10 (584 of 13372 DSOs), not the full ceiling
-     *  immediately, so wide views stay reasonably decluttered. */
+     *  in practice this means DSOs, since [SolarSystemObject] always passes via its sentinel. Log-
+     *  linear in field of view, the same shape as [starMagnitudeLimitFor] and for the same reason:
+     *  each tap of the zoom-in button is itself multiplicative ([MAP_ZOOM_STEP_FACTOR]), so "N taps
+     *  in" is a roughly constant step in ln(fieldOfViewDegrees) regardless of the starting zoom,
+     *  where a curve linear in the angle itself would reveal most of its range in the first couple
+     *  of taps. Calibrated so a fully-zoomed-out view (180°) shows no DSOs at all -- [DSO_LOG_SLOPE]
+     *  pushes the raw value at 180° far below [DSO_MAGNITUDE_FLOOR], which itself sits comfortably
+     *  under the brightest real DSO (the Pleiades, magnitude ~1.6) once [FADE_MAGNITUDE_RANGE] is
+     *  added back -- the first of those only starts fading in about 5 taps in (field of view ~59°),
+     *  and the full catalog depth (dso.bin's median magnitude is ~14) isn't reached until
+     *  [DSO_CEILING_FOV] at ~15 taps in (field of view ~6.3°) -- stretched out deliberately, so the
+     *  deepest, densest part of the catalog only shows up once the user is genuinely zoomed in
+     *  close, not partway through an ordinary browsing zoom. */
+    private const val DSO_MAGNITUDE_FLOOR = -1f
+    private const val DSO_MAGNITUDE_CEILING = 16f
+    private const val DSO_CEILING_FOV = 6.33
+    private const val DSO_LOG_SLOPE = 6.72f
     private fun magnitudeLimitFor(fieldOfViewDegrees: Double): Float {
-        val wideFov = 180.0
-        val narrowFov = 20.0
-        val t = ((wideFov - fieldOfViewDegrees) / (wideFov - narrowFov)).coerceIn(0.0, 1.0)
-        return (2.5 + t * (16.0 - 2.5)).toFloat()
+        val raw = DSO_MAGNITUDE_CEILING - DSO_LOG_SLOPE * ln(fieldOfViewDegrees / DSO_CEILING_FOV).toFloat()
+        return raw.coerceIn(DSO_MAGNITUDE_FLOOR, DSO_MAGNITUDE_CEILING)
     }
 
     /** [StarObject]s get their own reveal curve rather than sharing [magnitudeLimitFor]: stars.bin

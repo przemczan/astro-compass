@@ -13,10 +13,22 @@ sealed interface SkyObject {
     val magnitude: Float
     val searchCategory: SearchCategory
 
+    /** The object's catalog designation (e.g. "M1", "NGC 224", Bayer/Flamsteed for a star) --
+     *  null when it has none *distinct from* [displayName], which is the common case: most
+     *  catalog objects have no informal name at all, so [displayName] already *is* the catalog
+     *  designation and showing it twice would be redundant. See [searchDisplayLabel]. */
+    val catalogLabel: String? get() = null
+
     /** Equatorial position at the given moment -- J2000 catalog entries are precessed to date;
      *  solar system bodies are already computed "of date" by their ephemeris. */
     fun equatorialAt(julianCenturiesJ2000: Double): EquatorialCoordinates
 }
+
+/** "M1 - Crab Nebula" when the object has both a [SkyObject.catalogLabel] and an informal
+ *  [SkyObject.displayName], or just the display name when it doesn't -- used in search results and
+ *  the Guidance screen's app bar, where the catalog designation is worth surfacing alongside
+ *  whatever informal name is already shown. */
+fun SkyObject.searchDisplayLabel(): String = catalogLabel?.let { "$it - $displayName" } ?: displayName
 
 data class StarObject(
     val hygId: Int,
@@ -34,6 +46,15 @@ data class StarObject(
     override val displayName: String
         get() = properName.ifEmpty {
             BayerFlamsteed.formatForDisplay(bayer, flamsteed, constellation).ifEmpty { id }
+        }
+
+    /** Only set when [properName] itself is what [displayName] shows -- otherwise the
+     *  Bayer/Flamsteed designation already *is* [displayName] and repeating it would be redundant. */
+    override val catalogLabel: String?
+        get() = if (properName.isNotEmpty()) {
+            BayerFlamsteed.formatForDisplay(bayer, flamsteed, constellation).ifEmpty { null }
+        } else {
+            null
         }
 
     fun searchKeys(): List<String> = buildList {
@@ -85,6 +106,11 @@ data class DeepSkyObject(
 
     override val displayName: String
         get() = commonName.ifEmpty { messierLabel ?: prettyDesignation }
+
+    /** Only set when [commonName] itself is what [displayName] shows -- otherwise the catalog
+     *  designation already *is* [displayName] and repeating it would be redundant. */
+    override val catalogLabel: String?
+        get() = if (commonName.isNotEmpty()) messierLabel ?: prettyDesignation else null
 
     fun searchKeys(): List<String> = buildList {
         add(catalogDesignation.lowercase())

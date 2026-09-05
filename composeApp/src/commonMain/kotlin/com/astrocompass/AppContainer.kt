@@ -3,9 +3,9 @@ package com.astrocompass
 import com.astrocompass.alignment.AlignmentModel
 import com.astrocompass.alignment.AlignmentPoint
 import com.astrocompass.alignment.AlignmentResult
-import com.astrocompass.alignment.AlignmentSolver
 import com.astrocompass.alignment.AlignmentSource
 import com.astrocompass.alignment.AlignmentStore
+import com.astrocompass.alignment.AlignmentType
 import com.astrocompass.alignment.PlateSolveAlignment
 import com.astrocompass.astro.Angle
 import com.astrocompass.astro.Quaternion
@@ -20,7 +20,9 @@ import com.astrocompass.catalog.SkyObject
 import com.astrocompass.catalog.StarObject
 import com.astrocompass.guiding.AbsoluteReference
 import com.astrocompass.guiding.AlignmentAbsoluteReference
+import com.astrocompass.guiding.AutoPlateSolveRefiner
 import com.astrocompass.guiding.CompassAbsoluteReference
+import com.astrocompass.guiding.FreshestAbsoluteReference
 import com.astrocompass.guiding.GuidingMode
 import com.astrocompass.guiding.PlateSolveAttempt
 import com.astrocompass.guiding.PointingService
@@ -115,11 +117,29 @@ class AppContainer(
     private val compassReference =
         CompassAbsoluteReference(scope, orientationSensor, locationResolver.resolved, magneticDeclinationProvider)
 
-    /** Star alignment when there is one, rough compass otherwise -- see
-     *  [PrioritizedAbsoluteReference]. Screens distinguish the two by
-     *  [AbsoluteReferenceState.origin][com.astrocompass.guiding.AbsoluteReferenceState.origin]. */
-    val absoluteReference: AbsoluteReference =
-        PrioritizedAbsoluteReference(scope, preferred = alignmentReference, fallback = compassReference)
+    /** Live plate solves while guiding a camera-calibrated setup -- see [AutoPlateSolveRefiner].
+     *  Only ever running under [AlignmentType.PLATE_SOLVE]; see [setAutoPlateSolveActive]. */
+    private val autoPlateSolveRefiner = AutoPlateSolveRefiner(
+        scope = scope,
+        orientationSensor = orientationSensor,
+        telescopeAxis = preferences.telescopeAxis,
+        attemptSolve = ::attemptPlateSolve,
+        // Persisted once, not per solve: a warm start next launch is worth one write, while writing
+        // every few seconds would churn storage for a value the running refiner already holds.
+        onFirstSuccess = { attempt -> saveAlignment(attempt.correctedModel) },
+    )
+
+    /** The more recent of the live plate solve and the stored star alignment, and the rough compass
+     *  only if there is neither -- see [FreshestAbsoluteReference] for why those two are ranked by
+     *  age rather than by kind, and [PrioritizedAbsoluteReference] for why the compass is not.
+     *  Screens distinguish a real fit from the compass by
+     *  [AbsoluteReferenceState.origin][com.astrocompass.guiding.AbsoluteReferenceState.origin];
+     *  which *kind* of fit produced it is deliberately not a distinction they draw. */
+    val absoluteReference: AbsoluteReference = PrioritizedAbsoluteReference(
+        scope,
+        preferred = FreshestAbsoluteReference(scope, autoPlateSolveRefiner, alignmentReference),
+        fallback = compassReference,
+    )
 
     val pointingService = PointingService(scope, orientationSensor, absoluteReference, preferences.telescopeAxis)
 
@@ -139,11 +159,11 @@ class AppContainer(
             direction.takeIf { isReady }
         }.stateIn(scope, SharingStarted.Eagerly, null)
 
-    /** The user's own pick from the Guidance screen's mode button. Defaults to
-     *  [GuidingMode.TELESCOPE] so a connected mount transparently takes over guidance exactly as
-     *  it did before the picker existed -- [guidingMode] is what resolves that against whether
-     *  there is a mount at all. */
-    private val selectedGuidingMode = MutableStateFlow(GuidingMode.TELESCOPE)
+    /** Which instrument the user wants driving pointing. [GuidingMode.PHONE] until something calls
+     *  [setGuidingMode] -- the app is phone-only while the mode picker is hidden (see
+     *  `AppBottomBar`'s `SHOW_TELESCOPE_ENTRIES`), and a connected mount must not silently take
+     *  over guidance with no visible control to hand it back. */
+    private val selectedGuidingMode = MutableStateFlow(GuidingMode.PHONE)
 
     /** [selectedGuidingMode] resolved against the live connection: [GuidingMode.TELESCOPE] is
      *  meaningless without a mount, so it degrades to [GuidingMode.PHONE] whenever one isn't
@@ -172,6 +192,14 @@ class AppContainer(
         selectedGuidingMode.value = mode
     }
 
+    /** Turns the background solve loop on while the Guidance screen is showing a plate-solve setup
+     *  under phone guidance, and off otherwise -- there is nothing for it to correct while a mount
+     *  supplies pointing, and no reason to keep opening the camera outside guidance. */
+    fun setAutoPlateSolveActive(active: Boolean) {
+        val plateSolveSetup = preferences.alignmentType.value == AlignmentType.PLATE_SOLVE
+        autoPlateSolveRefiner.setActive(active && plateSolveSetup && guidingMode.value == GuidingMode.PHONE)
+    }
+
     init {
         scope.launch { catalogRepository.load() }
         orientationSensor.start()
@@ -198,23 +226,6 @@ class AppContainer(
         val skyDirection = target.currentHorizontal(location, nowEpochMillis).toEnu()
         val sensorDirection = orientation.deviceToWorld.rotate(preferences.telescopeAxis.value.deviceVector)
         return AlignmentPoint(skyDirection, sensorDirection, nowEpochMillis, target.id, source)
-    }
-
-    /** One-tap yaw-only re-sync against whatever is currently selected on the Guidance screen --
-     *  the primary remedy for gyro drift, reachable without re-entering the alignment flow.
-     *  Composes onto the existing model (see [AlignmentSolver.resync]) rather than replacing it,
-     *  so a prior 2-3 star fit's mounting correction survives the re-sync.
-     *
-     *  Null without a star alignment to correct: a yaw-only sync on top of the compass fallback
-     *  would look like a real alignment while carrying the compass's uncorrected mounting offset,
-     *  which is exactly the thing a 2-3 star fit exists to absorb. Plate solving is the honest
-     *  one-shot upgrade from compass mode -- see [attemptPlateSolve]. */
-    fun syncOnObject(target: SkyObject, nowEpochMillis: Long): AlignmentResult? {
-        val existingModel = alignmentStore.load() ?: return null
-        val point = captureAlignmentPoint(target, AlignmentSource.RE_SYNC, nowEpochMillis) ?: return null
-        val result = AlignmentSolver.resync(existingModel, point, nowEpochMillis)
-        if (result is AlignmentResult.Success) saveAlignment(result.model)
-        return result
     }
 
     /**
@@ -306,12 +317,6 @@ class AppContainer(
         val correctionDegrees = seedSkyDirection.angleTo(newPredictedPointing).degrees
 
         return PlateSolveAttempt(result, alignmentResult.model, correctionDegrees)
-    }
-
-    /** Saves a [PlateSolveAttempt] the user has confirmed -- see [attemptPlateSolve] for why
-     *  [PlateSolveAttempt.correctedModel] is already fully computed by the time it reaches here. */
-    fun applyPlateSolve(attempt: PlateSolveAttempt) {
-        saveAlignment(attempt.correctedModel)
     }
 
     /** [Lx200TelescopeConnection.connect] runs the mount-sync sequence (time, site, unpark)

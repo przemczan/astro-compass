@@ -39,8 +39,8 @@ object CompassAlignment {
     /** The horizontal component of [rotation], as a rotation angle about +Z. Both frames involved
      *  are gravity-referenced, so the true relationship between them is a pure yaw and any tilt
      *  in [rotation] is disagreement between two composite sensors -- noise, not signal, and
-     *  deliberately discarded. The negated [atan2] is the same right-hand-rule convention
-     *  documented in [AlignmentSolver.resync]'s yaw solve. */
+     *  deliberately discarded. The [atan2] is negated because a +phi rotation about +Z
+     *  (right-hand rule) *decreases* atan2(x, y) by phi. */
     private fun yawOf(rotation: Quaternion): Angle {
         val north = rotation.rotate(Vector3.UNIT_Y)
         return Angle.ofRadians(-atan2(north.x, north.y))

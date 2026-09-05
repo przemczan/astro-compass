@@ -3,6 +3,7 @@ package com.astrocompass.ui.screens
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.geometry.Offset
 import com.astrocompass.alignment.AlignmentPoint
 import com.astrocompass.catalog.StarObject
 import com.astrocompass.guiding.GuidingMode
@@ -10,6 +11,36 @@ import com.astrocompass.guiding.GuidingMode
 /** How many stars a fresh run uses -- the smallest count either mode accepts, so the quickest
  *  path through the screen is also the default one. */
 private const val DEFAULT_STAR_COUNT = 2
+
+/**
+ * The alignment wizard's steps. [CHOOSE_TYPE] forks into one of two chains, which never meet again:
+ * [STAR_SYNC] alone for a sensors-only setup, or the camera-calibration chain
+ * [CHOOSE_MIRROR]-[MOUNT_PHONE]-[POINT_TELESCOPE]-[CENTER_CROSSHAIR]-[DONE] for a plate-solving one.
+ *
+ * [previous] is the whole of the wizard's back navigation -- the toolbar's Back button and the
+ * system back gesture both walk it, so the two can't disagree.
+ */
+enum class AlignmentStep {
+    CHOOSE_TYPE,
+    STAR_SYNC,
+    CHOOSE_MIRROR,
+    MOUNT_PHONE,
+    POINT_TELESCOPE,
+    CENTER_CROSSHAIR,
+    DONE,
+    ;
+
+    /** The step Back leads to, or null at the wizard's start, where Back leaves the screen. */
+    val previous: AlignmentStep?
+        get() = when (this) {
+            CHOOSE_TYPE -> null
+            STAR_SYNC, CHOOSE_MIRROR -> CHOOSE_TYPE
+            MOUNT_PHONE -> CHOOSE_MIRROR
+            POINT_TELESCOPE -> MOUNT_PHONE
+            CENTER_CROSSHAIR -> POINT_TELESCOPE
+            DONE -> CENTER_CROSSHAIR
+        }
+}
 
 /**
  * An alignment run in progress, held by `GuiderApp` rather than remembered inside
@@ -31,6 +62,41 @@ private const val DEFAULT_STAR_COUNT = 2
 class AlignmentSession {
     private var mode by mutableStateOf(GuidingMode.PHONE)
     private val alignsMount get() = mode == GuidingMode.TELESCOPE
+
+    /** Which wizard step is showing. Held here, not in the screen, for the same reason as the run
+     *  itself -- a trip through Settings would otherwise drop the user back at [CHOOSE_TYPE] with a
+     *  half-finished run behind it. */
+    var step by mutableStateOf(AlignmentStep.CHOOSE_TYPE)
+        private set
+
+    fun goTo(newStep: AlignmentStep) {
+        step = newStep
+    }
+
+    /** One step back, or false at the start of the wizard -- where the caller leaves the screen. */
+    fun stepBack(): Boolean {
+        step = step.previous ?: return false
+        return true
+    }
+
+    /** The camera branch's draft, kept alongside the star branch's [points] rather than
+     *  `remember`ed in the screen, so both survive a teardown identically. Nothing here is
+     *  persisted until the wizard's last step confirms. */
+    var calibrationCameraId by mutableStateOf<String?>(null)
+        private set
+    var calibrationPhysicalCameraId by mutableStateOf<String?>(null)
+        private set
+    var calibrationPan by mutableStateOf(Offset.Zero)
+        private set
+
+    fun selectCalibrationCamera(cameraId: String?, physicalCameraId: String?) {
+        calibrationCameraId = cameraId
+        calibrationPhysicalCameraId = physicalCameraId
+    }
+
+    fun updateCalibrationPan(pan: Offset) {
+        calibrationPan = pan
+    }
 
     private var phoneStarCount by mutableStateOf(DEFAULT_STAR_COUNT)
     private var mountStarCount by mutableStateOf(DEFAULT_STAR_COUNT)
@@ -90,7 +156,8 @@ class AlignmentSession {
         mountAlignedStars = mountAlignedStars + star
     }
 
-    /** Ends the *current* mode's run, leaving the other one's progress alone. */
+    /** Ends the *current* mode's run and returns the wizard to its first step, leaving the other
+     *  mode's progress alone. */
     fun clear() {
         if (alignsMount) {
             mountAlignmentActive = false
@@ -98,5 +165,6 @@ class AlignmentSession {
         } else {
             points = emptyList()
         }
+        step = AlignmentStep.CHOOSE_TYPE
     }
 }

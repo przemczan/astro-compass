@@ -89,6 +89,7 @@ fun SettingsScreen(
             HorizontalDivider(Modifier.padding(vertical = 16.dp))
             SectionTitle("Appearance")
             ThemeSection(preferences)
+            HorizonDimmingSection(preferences)
 
             HorizontalDivider(Modifier.padding(vertical = 16.dp))
             SectionTitle("Object images (Beta)")
@@ -215,6 +216,15 @@ private fun ThemeSection(preferences: AppPreferences) {
                 label = { Text(theme?.name ?: "System") },
             )
         }
+    }
+}
+
+@Composable
+private fun HorizonDimmingSection(preferences: AppPreferences) {
+    val current by preferences.dimBelowHorizon.collectAsState()
+    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 8.dp)) {
+        Checkbox(checked = current, onCheckedChange = { preferences.setDimBelowHorizon(it) })
+        Text("Dim objects below the horizon", style = MaterialTheme.typography.bodyMedium)
     }
 }
 

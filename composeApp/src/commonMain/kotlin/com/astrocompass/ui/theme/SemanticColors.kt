@@ -11,9 +11,13 @@ val OnTargetGreen = Color(0xFF4CAF50)
  *  [com.astrocompass.ui.components.SkyMapMarker.telescope]. */
 val TelescopeBlue = Color(0xFF2196F3)
 
-/** The Guidance screen's arrow trail from current pointing to target -- a lighter shade than
- *  [TelescopeBlue] so the two read as distinct even when both are on screen (Telescope mode shows
- *  the mount's own marker alongside the path), and deliberately outside the app's usual
+/** The Guidance screen's arrow trail from current pointing to target -- warm amber/orange so it
+ *  reads as distinct from [TelescopeBlue]/[OnTargetGreen] even when both are on screen (Telescope
+ *  mode shows the mount's own marker alongside the path), and deliberately outside the app's usual
  *  theme-driven palette so the trail doesn't blend into `MaterialTheme.colorScheme.primary`, which
  *  the target marker and label already use. See [com.astrocompass.ui.components.SkyMapGuidancePath]. */
-val GuidancePathBlue = Color(0xFF80D8FF)
+val GuidancePathAmber = Color(0xFFFFB74D)
+
+/** "This still works, but it is rough" -- the compass fallback, and an uncalibrated setup. Deeper
+ *  than [GuidancePathAmber] so it reads as a caution rather than as another piece of the map. */
+val WarningAmber = Color(0xFFFFA000)

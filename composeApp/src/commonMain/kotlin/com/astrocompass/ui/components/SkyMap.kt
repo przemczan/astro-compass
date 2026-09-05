@@ -64,12 +64,16 @@ data class SkyMapMarker(
     val direction: Vector3,
     val color: Color,
     val label: String? = null,
+    /** True centers [label] above the marker instead of anchoring it to the right (see
+     *  [drawObjectLabel]) -- for a marker naming *what it is* (Phone/Telescope) rather than a
+     *  catalog object, which reads better sitting squarely over its own crosshair. */
+    val labelAbove: Boolean = false,
 ) {
     companion object {
         /** The connected mount's own reported direction -- drawn exactly like any other marker, in
          *  [TelescopeBlue] so it reads as the telescope's position rather than the app's own
          *  pointing, on every map that shows one. */
-        fun telescope(direction: Vector3): SkyMapMarker = SkyMapMarker(direction, TelescopeBlue)
+        fun telescope(direction: Vector3): SkyMapMarker = SkyMapMarker(direction, TelescopeBlue, label = "Telescope", labelAbove = true)
     }
 }
 
@@ -107,6 +111,24 @@ private const val LABEL_MAGNITUDE_MARGIN = 3f
  *  this actually binds, it's still the brightest objects that survive, not an arbitrary subset. */
 private const val MAX_LABELS = 40
 private val TOUCH_TARGET_RADIUS_DP = 22.dp
+
+/** How far a label sits to the right of the dot it names. */
+private const val LABEL_ANCHOR_GAP_PX = 8f
+
+/** Everything below the horizon draws at this fraction of its normal opacity -- dimmed by 75%. It
+ *  is behind the ground and can't be observed, but it still belongs on the chart: dimming rather
+ *  than hiding it keeps a constellation half-risen readable as one shape, and shows at a glance how
+ *  long a target still has to wait. */
+private const val BELOW_HORIZON_ALPHA = 0.25f
+
+/** Where a drawn label ended up, so a tap on the name selects its object -- a label is a far bigger
+ *  and steadier target than the few pixels of the dot beside it.
+ *
+ *  Collected during the draw pass into a plain list rather than snapshot state: it is rewritten
+ *  every frame and read only by the tap handler, so making it observable would feed each frame
+ *  straight back into recomposition. Being drawn is also exactly the condition for being tappable,
+ *  which is why this is built where the drawing happens instead of being derived separately. */
+private class LabelHitBox(val skyObject: SkyObject, val bounds: Rect)
 /** A star's rendered core radius grows linearly with how far its magnitude sits above the
  *  *current zoom's* limiting magnitude ([SkyMapScene.starMagnitudeLimitFor]) -- not with its
  *  absolute magnitude. This is deliberate, matching how Stellarium renders point sources: a star
@@ -230,8 +252,12 @@ fun SkyMap(
     /** Beta feature flag (Settings -> "Object images") -- false skips resolving/drawing photos
      *  entirely, falling back to the plain dot/glyph for every object. */
     showObjectPhotos: Boolean = true,
+    /** Settings -> Appearance toggle -- false draws everything below the horizon at full opacity
+     *  instead of [BELOW_HORIZON_ALPHA]. */
+    dimBelowHorizon: Boolean = true,
     onSelect: ((SkyObject) -> Unit)? = null,
 ) {
+    val belowHorizonAlpha = if (dimBelowHorizon) BELOW_HORIZON_ALPHA else 1f
     var canvasSize by remember { mutableStateOf(IntSize.Zero) }
 
     val scene = remember(directions, viewport, canvasSize) {
@@ -291,6 +317,7 @@ fun SkyMap(
     val currentScene = rememberUpdatedState(scene)
     val currentPixelsPerUnit = rememberUpdatedState(pixelsPerUnit)
     val currentOnSelect = rememberUpdatedState(onSelect)
+    val labelHitBoxes = remember { mutableListOf<LabelHitBox>() }
 
     val backgroundColor = MaterialTheme.colorScheme.surface
     val constellationLineColor = MaterialTheme.colorScheme.outlineVariant
@@ -323,6 +350,12 @@ fun SkyMap(
                     val select = currentOnSelect.value ?: return@detectTapGestures
                     val ppu = currentPixelsPerUnit.value
                     if (ppu <= 0f) return@detectTapGestures
+                    // A label is checked before its own dot: it is the larger target of the two, and
+                    // tapping a name to pick what it names is what a reader expects.
+                    labelHitBoxes.firstOrNull { it.bounds.contains(offset) }?.let {
+                        select(it.skyObject)
+                        return@detectTapGestures
+                    }
                     val center = Offset(size.width / 2f, size.height / 2f)
                     val tapPoint = PlanePoint(
                         x = ((offset.x - center.x) / ppu).toDouble(),
@@ -374,22 +407,9 @@ fun SkyMap(
             kotlin.math.abs(point.x) <= visibleHalfWidth && kotlin.math.abs(point.y) <= visibleHalfHeight
 
         drawGraticule(projection, ::toScreen, graticuleColor, maxPlaneX, maxPlaneY)
-        drawConstellationLines(constellationLines, projection, ::toScreen, constellationLineColor, maxPlaneX, maxPlaneY)
+        drawConstellationLines(constellationLines, projection, ::toScreen, constellationLineColor, maxPlaneX, maxPlaneY, belowHorizonAlpha)
         drawHorizon(projection, ::toScreen, horizonColor, maxPlaneX, maxPlaneY)
         drawCardinalPoints(projection, ::toScreen, textMeasurer, cardinalStyle)
-
-        for (marker in markers) {
-            val point = projection.project(marker.direction) ?: continue
-            val screenPoint = toScreen(point)
-            drawMarker(screenPoint, marker.color)
-            // Unlike catalog objects, a marker's label isn't limited to the brightest few --
-            // it's how a selected/target object stays identifiable even if it wouldn't
-            // otherwise earn a label (a faint star, or any deep-sky object outside the
-            // always-labeled solar system bodies).
-            marker.label?.let { label -> drawObjectLabel(screenPoint, label, textMeasurer, labelStyle) }
-        }
-
-        guidancePath?.let { drawGuidancePath(it, projection, ::toScreen, pixelsPerUnit) }
 
         // Tracks which DeepSkyObjects actually drew something (photo, or a schematic glyph that
         // cleared MIN_DSO_APPARENT_RADIUS_PX) -- the label pass below must agree, or a bright-but-
@@ -399,18 +419,19 @@ fun SkyMap(
             val screenPoint = toScreen(projected.point)
             val isHighlighted = highlightedIds.contains(projected.skyObject.id)
             val photo = objectPhotos[projected.skyObject.id]
+            val alpha = projected.alpha * projected.direction.horizonAlpha(belowHorizonAlpha)
             when (val obj = projected.skyObject) {
-                is StarObject -> drawStar(screenPoint, obj.magnitude, starColor, currentStarMagnitudeLimit, projected.alpha, isHighlighted, highlightColor)
+                is StarObject -> drawStar(screenPoint, obj.magnitude, starColor, currentStarMagnitudeLimit, alpha, isHighlighted, highlightColor)
                 is DeepSkyObject -> if (photo != null) {
-                    drawObjectPhoto(screenPoint, photo.image, photo.targetLongestEdgePx, photo.rotationDegrees, projected.alpha)
+                    drawObjectPhoto(screenPoint, photo.image, photo.targetLongestEdgePx, photo.rotationDegrees, alpha)
                     visibleDsoIds += obj.id
                 } else {
                     val apparentRadiusPx = obj.apparentRadiusPx(pixelsPerUnit)
-                    val drew = drawDeepSkyObject(screenPoint, obj.type, dsoColor, isHighlighted, highlightColor, projected.alpha, apparentRadiusPx)
+                    val drew = drawDeepSkyObject(screenPoint, obj.type, dsoColor, isHighlighted, highlightColor, alpha, apparentRadiusPx)
                     if (drew) visibleDsoIds += obj.id
                 }
                 is SolarSystemObject -> drawStar(
-                    screenPoint, PLANET_DRAW_MAGNITUDE, planetColor, currentStarMagnitudeLimit, projected.alpha,
+                    screenPoint, PLANET_DRAW_MAGNITUDE, planetColor, currentStarMagnitudeLimit, alpha,
                     isHighlighted, highlightColor, sizeMultiplier = SOLAR_SYSTEM_SIZE_MULTIPLIER,
                 )
             }
@@ -427,8 +448,35 @@ fun SkyMap(
             .sortedBy { it.skyObject.magnitude }
             .take(MAX_LABELS) +
             scene.filter { (highlightedIds.contains(it.skyObject.id) || it.skyObject is SolarSystemObject) && isOnScreen(it.point) }
+        labelHitBoxes.clear()
         for (projected in labeled.distinct()) {
-            drawObjectLabel(toScreen(projected.point), projected.skyObject.displayName, textMeasurer, labelStyle)
+            val bounds = drawObjectLabel(
+                toScreen(projected.point), projected.skyObject.displayName, textMeasurer, labelStyle,
+                alpha = projected.direction.horizonAlpha(belowHorizonAlpha),
+            )
+            labelHitBoxes += LabelHitBox(projected.skyObject, bounds)
+        }
+
+        // Markers (and the guidance path between them) draw last, on top of every catalog object --
+        // including a DeepSkyObject's bundled photo, which can be hundreds of pixels across and
+        // would otherwise paint straight over a target/telescope/current-pointing marker drawn
+        // earlier in the frame.
+        guidancePath?.let { drawGuidancePath(it, projection, ::toScreen, pixelsPerUnit) }
+        for (marker in markers) {
+            val point = projection.project(marker.direction) ?: continue
+            val screenPoint = toScreen(point)
+            drawMarker(screenPoint, marker.color)
+            // Unlike catalog objects, a marker's label isn't limited to the brightest few --
+            // it's how a selected/target object stays identifiable even if it wouldn't
+            // otherwise earn a label (a faint star, or any deep-sky object outside the
+            // always-labeled solar system bodies).
+            marker.label?.let { label ->
+                if (marker.labelAbove) {
+                    drawLabelCenteredAbove(screenPoint, label, textMeasurer, labelStyle, MARKER_RADIUS_DP.toPx() * 1.6f)
+                } else {
+                    drawObjectLabel(screenPoint, label, textMeasurer, labelStyle)
+                }
+            }
         }
     }
 }
@@ -481,9 +529,10 @@ private fun DrawScope.drawConstellationLines(
     color: Color,
     maxPlaneX: Double,
     maxPlaneY: Double,
+    belowHorizonAlpha: Float,
 ) {
     for (polyline in polylines) {
-        drawDirectionPolyline(polyline, projection, toScreen, color, strokeWidth = 1f, maxPlaneX, maxPlaneY)
+        drawDirectionPolyline(polyline, projection, toScreen, color, strokeWidth = 1f, maxPlaneX, maxPlaneY, belowHorizonAlpha = belowHorizonAlpha)
     }
 }
 
@@ -492,6 +541,10 @@ private fun DrawScope.drawConstellationLines(
  *  site's comment on why that second check matters) -- shared by [drawHorizon] and
  *  [drawConstellationLines], both of which are "backdrop" strokes drawn directly from ENU
  *  directions rather than from [SkyMapScene]'s per-object projected list. */
+/** Split into two paths by [BELOW_HORIZON_ALPHA], per *segment* rather than per polyline, so a
+ *  constellation half-risen dims exactly at the horizon instead of all at once. A segment takes the
+ *  side its own midpoint falls on, which is why the sum of the two endpoints' up-components is what
+ *  is tested. The horizon line itself sits at exactly zero and so draws undimmed. */
 private fun DrawScope.drawDirectionPolyline(
     directions: List<Vector3>,
     projection: StereographicProjection,
@@ -501,26 +554,34 @@ private fun DrawScope.drawDirectionPolyline(
     maxPlaneX: Double,
     maxPlaneY: Double,
     pathEffect: PathEffect? = null,
+    belowHorizonAlpha: Float = BELOW_HORIZON_ALPHA,
 ) {
-    val path = Path()
-    var started = false
+    val abovePath = Path()
+    val belowPath = Path()
+    var previous: Pair<Vector3, Offset>? = null
     for (direction in directions) {
         val point = projection.project(direction)
         val inBounds = point != null && kotlin.math.abs(point.x) <= maxPlaneX && kotlin.math.abs(point.y) <= maxPlaneY
         if (!inBounds) {
-            started = false
+            previous = null
             continue
         }
         val screen = toScreen(point)
-        if (!started) {
-            path.moveTo(screen.x, screen.y)
-            started = true
-        } else {
+        previous?.let { (previousDirection, previousScreen) ->
+            val path = if (previousDirection.z + direction.z < 0.0) belowPath else abovePath
+            path.moveTo(previousScreen.x, previousScreen.y)
             path.lineTo(screen.x, screen.y)
         }
+        previous = direction to screen
     }
-    drawPath(path, color, style = Stroke(width = strokeWidth, pathEffect = pathEffect))
+    val stroke = Stroke(width = strokeWidth, pathEffect = pathEffect)
+    drawPath(abovePath, color, style = stroke)
+    drawPath(belowPath, color.copy(alpha = color.alpha * belowHorizonAlpha), style = stroke)
 }
+
+/** [belowHorizonAlpha] for a direction under the horizon, 1 above it. ENU's z *is* the
+ *  up-component, so this is the altitude's sign without the trig to recover the angle. */
+private fun Vector3.horizonAlpha(belowHorizonAlpha: Float): Float = if (z < 0.0) belowHorizonAlpha else 1f
 
 private fun DrawScope.drawCardinalPoints(
     projection: StereographicProjection,
@@ -945,9 +1006,28 @@ private fun DrawScope.drawObjectLabel(
     text: String,
     textMeasurer: TextMeasurer,
     style: TextStyle,
-) {
+    alpha: Float = 1f,
+): Rect {
     val measured = textMeasurer.measure(text, style)
-    drawText(measured, topLeft = Offset(anchor.x + 8f, anchor.y - measured.size.height / 2f))
+    val topLeft = Offset(anchor.x + LABEL_ANCHOR_GAP_PX, anchor.y - measured.size.height / 2f)
+    drawText(measured, topLeft = topLeft, alpha = alpha)
+    return Rect(topLeft, Size(measured.size.width.toFloat(), measured.size.height.toFloat()))
+}
+
+/** Like [drawObjectLabel], but horizontally centered above [anchor] rather than anchored to its
+ *  right -- see [SkyMapMarker.labelAbove]. [gapAbovePx] clears the marker's own drawn extent (its
+ *  crosshair ticks, not just its ring) so the label never overlaps it. */
+private fun DrawScope.drawLabelCenteredAbove(
+    anchor: Offset,
+    text: String,
+    textMeasurer: TextMeasurer,
+    style: TextStyle,
+    gapAbovePx: Float,
+): Rect {
+    val measured = textMeasurer.measure(text, style)
+    val topLeft = Offset(anchor.x - measured.size.width / 2f, anchor.y - gapAbovePx - measured.size.height)
+    drawText(measured, topLeft = topLeft)
+    return Rect(topLeft, Size(measured.size.width.toFloat(), measured.size.height.toFloat()))
 }
 
 private enum class DsoGlyph { ELLIPSE, CIRCLE, SQUARE, DIAMOND }

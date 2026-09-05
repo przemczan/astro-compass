@@ -18,7 +18,7 @@ enum class CameraFacing { BACK, FRONT, OTHER }
 data class CameraDescriptor(val id: String, val physicalId: String?, val label: String, val facing: CameraFacing)
 
 /**
- * Lists the cameras available for [com.astrocompass.ui.screens.PhoneCalibrationScreen]'s camera
+ * Lists the cameras available for the alignment wizard's camera
  * selector. Platform-specific implementations are plain classes (not `expect`/`actual`), same
  * shape as [CameraCapture] -- the Android one needs a `Context` constructor parameter, so
  * `MainActivity`/`MainViewController` construct the platform instance and inject it.

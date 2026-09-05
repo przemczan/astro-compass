@@ -1,5 +1,6 @@
 package com.astrocompass.settings
 
+import com.astrocompass.alignment.AlignmentType
 import com.astrocompass.astro.Angle
 import com.astrocompass.catalog.MapObjectFilter
 import com.astrocompass.guiding.CameraMounting
@@ -68,8 +69,8 @@ class AppPreferences(private val settings: Settings) {
         settings.putString(KEY_CAMERA_MOUNTING, mounting.name)
     }
 
-    /** Set by [com.astrocompass.ui.screens.PhoneCalibrationScreen]'s camera selector. Null = auto
-     *  (the first back-facing camera -- see `AndroidCameraCapture.captureFrame`'s fallback). */
+    /** Set by the alignment wizard's camera selector. Null = auto (the first back-facing camera --
+     *  see `AndroidCameraCapture.captureFrame`'s fallback). */
     val selectedCameraId = MutableStateFlow(settings.getStringOrNull(KEY_SELECTED_CAMERA_ID))
     fun setSelectedCameraId(id: String?) {
         selectedCameraId.value = id
@@ -87,18 +88,28 @@ class AppPreferences(private val settings: Settings) {
         if (id == null) settings.remove(KEY_SELECTED_PHYSICAL_CAMERA_ID) else settings.putString(KEY_SELECTED_PHYSICAL_CAMERA_ID, id)
     }
 
-    /** Set by [com.astrocompass.ui.screens.PhoneCalibrationScreen]'s mirror-choice step. Not yet
-     *  consumed by plate solving -- see that screen's doc comment. */
-    val phoneCalibrationUsesMirror = MutableStateFlow(settings.getBoolean(KEY_PHONE_CAL_MIRROR, false))
-    fun setPhoneCalibrationUsesMirror(usesMirror: Boolean) {
-        phoneCalibrationUsesMirror.value = usesMirror
-        settings.putBoolean(KEY_PHONE_CAL_MIRROR, usesMirror)
+    /** Which instrument the last completed alignment used, or null if there has never been one.
+     *  [com.astrocompass.AppContainer] gates background plate solving on this, and the alignment
+     *  wizard's first step reports it back to the user. */
+    val alignmentType = MutableStateFlow(
+        settings.getStringOrNull(KEY_ALIGNMENT_TYPE)?.let { runCatching { AlignmentType.valueOf(it) }.getOrNull() }
+    )
+
+    /** When that alignment was finished. Kept separately from
+     *  [com.astrocompass.alignment.AlignmentModel.computedAtEpochMillis] because the camera branch
+     *  completes without producing a model at all, and the wizard needs one uniform answer. */
+    val alignmentCompletedAtEpochMillis = MutableStateFlow(settings.getLongOrNull(KEY_ALIGNMENT_COMPLETED_AT))
+
+    fun setAlignmentCompleted(type: AlignmentType, epochMillis: Long) {
+        alignmentType.value = type
+        alignmentCompletedAtEpochMillis.value = epochMillis
+        settings.putString(KEY_ALIGNMENT_TYPE, type.name)
+        settings.putLong(KEY_ALIGNMENT_COMPLETED_AT, epochMillis)
     }
 
     /** Where the telescope's optical axis falls in the camera frame -- see [TelescopeBoresight]'s
      *  doc comment for why this is a separate concept from [CameraMounting]/`CameraIntrinsics`'
-     *  principal point. Null until [com.astrocompass.ui.screens.PhoneCalibrationScreen] has been
-     *  completed once. */
+     *  principal point. Null until the alignment wizard's camera branch has been completed once. */
     val telescopeBoresight = MutableStateFlow(readTelescopeBoresight())
     fun setTelescopeBoresight(boresight: TelescopeBoresight?) {
         telescopeBoresight.value = boresight
@@ -140,6 +151,15 @@ class AppPreferences(private val settings: Settings) {
     fun setLastTargetId(id: String?) {
         lastTargetId.value = id
         if (id == null) settings.remove(KEY_LAST_TARGET) else settings.putString(KEY_LAST_TARGET, id)
+    }
+
+    /** Whether the sky map dims objects/constellation lines below the horizon (see
+     *  [com.astrocompass.ui.components.SkyMap]'s `BELOW_HORIZON_ALPHA`). Defaults on; some users
+     *  find the dimming more distracting than helpful. */
+    val dimBelowHorizon = MutableStateFlow(settings.getBoolean(KEY_DIM_BELOW_HORIZON, true))
+    fun setDimBelowHorizon(dim: Boolean) {
+        dimBelowHorizon.value = dim
+        settings.putBoolean(KEY_DIM_BELOW_HORIZON, dim)
     }
 
     /** Beta: swaps an object's sky-map dot for its bundled photo once zoomed in enough --
@@ -254,7 +274,8 @@ class AppPreferences(private val settings: Settings) {
         const val KEY_SELECTED_CAMERA_ID = "selected_camera_id"
         // Mirrors AndroidCameraCapture's own private KEY_SELECTED_PHYSICAL_CAMERA_ID string.
         const val KEY_SELECTED_PHYSICAL_CAMERA_ID = "selected_physical_camera_id"
-        const val KEY_PHONE_CAL_MIRROR = "phone_cal_uses_mirror"
+        const val KEY_ALIGNMENT_TYPE = "alignment_type"
+        const val KEY_ALIGNMENT_COMPLETED_AT = "alignment_completed_at"
         const val KEY_BORESIGHT_X = "telescope_boresight_x"
         const val KEY_BORESIGHT_Y = "telescope_boresight_y"
         const val KEY_MANUAL_LAT = "manual_lat"
@@ -262,6 +283,7 @@ class AppPreferences(private val settings: Settings) {
         const val KEY_MANUAL_ELEVATION = "manual_elevation"
         const val KEY_LAST_TARGET = "last_target_id"
         const val KEY_SHOW_OBJECT_IMAGES = "show_object_images"
+        const val KEY_DIM_BELOW_HORIZON = "dim_below_horizon"
         const val KEY_SHOW_SOLAR_SYSTEM = "show_solar_system"
         const val KEY_SHOW_GALAXIES = "show_galaxies"
         const val KEY_SHOW_NEBULAE = "show_nebulae"

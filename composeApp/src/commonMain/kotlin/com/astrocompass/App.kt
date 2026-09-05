@@ -9,19 +9,20 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import com.astrocompass.alignment.AlignmentType
 import com.astrocompass.astro.time.currentEpochMillis
 import com.astrocompass.catalog.SearchCategory
 import com.astrocompass.catalog.SkyObject
 import com.astrocompass.guiding.ReferenceOrigin
 import com.astrocompass.guiding.currentHorizontal
 import com.astrocompass.ui.BackHandler
+import com.astrocompass.ui.components.AppMenuActions
 import com.astrocompass.ui.screens.AlignmentScreen
 import com.astrocompass.ui.screens.AlignmentSession
 import com.astrocompass.ui.screens.GuidanceScreen
 import com.astrocompass.ui.screens.MapScreen
 import com.astrocompass.ui.screens.NightWizardListScreen
 import com.astrocompass.ui.screens.NightWizardOptionsScreen
-import com.astrocompass.ui.screens.PhoneCalibrationScreen
 import com.astrocompass.ui.screens.SearchScreen
 import com.astrocompass.ui.screens.SettingsScreen
 import com.astrocompass.ui.screens.TelescopeScreen
@@ -43,7 +44,6 @@ fun GuiderApp(container: AppContainer, onExitApp: () -> Unit = {}) {
         var selectedTarget by remember { mutableStateOf<SkyObject?>(null) }
         var isGuiding by remember { mutableStateOf(false) }
         var showAlignment by remember { mutableStateOf(false) }
-        var showPhoneCalibration by remember { mutableStateOf(false) }
         var showSettings by remember { mutableStateOf(false) }
         var showSearch by remember { mutableStateOf(false) }
         var showTelescope by remember { mutableStateOf(false) }
@@ -82,6 +82,7 @@ fun GuiderApp(container: AppContainer, onExitApp: () -> Unit = {}) {
         val magnitudeLimit by container.preferences.magnitudeLimit.collectAsState()
         val toleranceDegrees by container.preferences.onTargetToleranceDegrees.collectAsState()
         val showObjectImages by container.preferences.showObjectImages.collectAsState()
+        val dimBelowHorizon by container.preferences.dimBelowHorizon.collectAsState()
         val mapObjectFilter by container.preferences.mapObjectFilter.collectAsState()
         val nightWizardObjectFilter by container.preferences.nightWizardObjectFilter.collectAsState()
         val nightWizardMagnitudeLimit by container.preferences.nightWizardMagnitudeLimit.collectAsState()
@@ -97,8 +98,10 @@ fun GuiderApp(container: AppContainer, onExitApp: () -> Unit = {}) {
         val slewRatePreset by container.preferences.slewRatePreset.collectAsState()
         val selectedCameraId by container.preferences.selectedCameraId.collectAsState()
         val selectedPhysicalCameraId by container.preferences.selectedPhysicalCameraId.collectAsState()
-        val phoneCalibrationUsesMirror by container.preferences.phoneCalibrationUsesMirror.collectAsState()
         val telescopeBoresight by container.preferences.telescopeBoresight.collectAsState()
+        val alignmentType by container.preferences.alignmentType.collectAsState()
+        val alignmentCompletedAt by container.preferences.alignmentCompletedAtEpochMillis.collectAsState()
+        val lastAlignment = alignmentType?.let { type -> alignmentCompletedAt?.let { type to it } }
 
         val location = resolvedLocation
 
@@ -144,25 +147,41 @@ fun GuiderApp(container: AppContainer, onExitApp: () -> Unit = {}) {
             resumeWizardAfterOptions = false
         }
 
-        // Exiting guidance keeps selectedTarget marked, so the Search screen's Goto button is
-        // still there when the user lands back on it.
+        // Exiting guidance keeps selectedTarget marked, so the map's Goto button is still there when
+        // the user lands back on it.
+        //
+        // Search is popped ahead of guidance and the wizard, matching the render `when` below:
+        // Search opens *over* whatever screen it was reached from and returns to it, so a back press
+        // that closed guidance instead would drop the screen underneath the one being dismissed.
         val goBack: () -> Unit = {
             when {
                 showSettings -> showSettings = false
-                showPhoneCalibration -> showPhoneCalibration = false
-                showAlignment -> showAlignment = false
+                // One step back up the alignment wizard, leaving the screen only from its first
+                // step -- the same walk its toolbar's own Back button does.
+                showAlignment -> if (!alignmentSession.stepBack()) showAlignment = false
                 showTelescope -> showTelescope = false
+                showSearch -> showSearch = false
                 showNightWizardOptions -> if (resumeWizardAfterOptions) resumeWizard() else cancelWizard()
                 nightWizardObjects != null && !nightWizardStarted -> openWizardOptions()
                 isGuiding && nightWizardObjects != null -> backToWizardList()
                 isGuiding -> isGuiding = false
-                showSearch -> showSearch = false
             }
         }
         BackHandler(
-            enabled = showSettings || showPhoneCalibration || showAlignment || showTelescope || showSearch || isGuiding ||
+            enabled = showSettings || showAlignment || showTelescope || showSearch || isGuiding ||
                 showNightWizardOptions || (nightWizardObjects != null && !nightWizardStarted),
             onBack = goBack,
+        )
+
+        // The app-wide destinations every bottom bar's hamburger menu offers -- one value passed to
+        // each screen rather than a handful of callbacks repeated per screen.
+        val menuActions = AppMenuActions(
+            isStarAligned = isStarAligned,
+            onOpenAlignment = { isGuiding = false; showAlignment = true },
+            onOpenNightWizard = { showNightWizardOptions = true },
+            onOpenSettings = { showSettings = true },
+            onOpenTelescope = { showTelescope = true },
+            isTelescopeConnected = isTelescopeConnected,
         )
 
         when {
@@ -174,34 +193,32 @@ fun GuiderApp(container: AppContainer, onExitApp: () -> Unit = {}) {
                 modifier = Modifier.fillMaxSize(),
             )
 
-            showPhoneCalibration -> PhoneCalibrationScreen(
-                cameraEnumerator = container.cameraEnumerator,
-                currentSelectedCameraId = selectedCameraId,
-                currentSelectedPhysicalCameraId = selectedPhysicalCameraId,
-                currentUsesMirror = phoneCalibrationUsesMirror,
-                currentBoresight = telescopeBoresight,
-                onSave = { cameraId, physicalCameraId, usesMirror, boresight ->
-                    container.preferences.setSelectedCameraId(cameraId)
-                    container.preferences.setSelectedPhysicalCameraId(physicalCameraId)
-                    container.preferences.setPhoneCalibrationUsesMirror(usesMirror)
-                    container.preferences.setTelescopeBoresight(boresight)
-                },
-                onBack = goBack,
-                modifier = Modifier.fillMaxSize(),
-            )
-
             showAlignment && location != null -> AlignmentScreen(
                 session = alignmentSession,
                 catalogRepository = container.catalogRepository,
                 location = location,
+                cameraEnumerator = container.cameraEnumerator,
                 telescopeDirection = telescopeDirection,
                 mapObjectFilter = mapObjectFilter,
                 onMapObjectFilterChange = { container.preferences.setMapObjectFilter(it) },
                 onCapturePoint = container::captureAlignmentPoint,
-                onSaveModel = { model -> container.saveAlignment(model) },
+                onSaveModel = { model ->
+                    container.saveAlignment(model)
+                    container.preferences.setAlignmentCompleted(AlignmentType.SENSORS_ONLY, currentEpochMillis())
+                },
                 guidingMode = guidingMode,
-                onGuidingModeChange = { container.setGuidingMode(it) },
-                isTelescopeConnected = isTelescopeConnected,
+                selectedCameraId = selectedCameraId,
+                selectedPhysicalCameraId = selectedPhysicalCameraId,
+                telescopeBoresight = telescopeBoresight,
+                onSaveCameraCalibration = { cameraId, physicalCameraId, boresight ->
+                    container.preferences.setSelectedCameraId(cameraId)
+                    container.preferences.setSelectedPhysicalCameraId(physicalCameraId)
+                    container.preferences.setTelescopeBoresight(boresight)
+                    container.preferences.setAlignmentCompleted(AlignmentType.PLATE_SOLVE, currentEpochMillis())
+                },
+                onSelectTelescopeAxis = { container.preferences.setTelescopeAxis(it) },
+                lastAlignment = lastAlignment,
+                nowEpochMillis = currentEpochMillis(),
                 onGoto = { star -> container.slewTelescopeTo(star, currentEpochMillis()) },
                 onBeginMountAlignment = { starCount -> container.beginTelescopeAlignment(starCount) },
                 onReadAtHome = { container.readTelescopeAtHome() },
@@ -212,9 +229,8 @@ fun GuiderApp(container: AppContainer, onExitApp: () -> Unit = {}) {
                 onReleaseDirection = { direction -> container.stopTelescopeMove(direction) },
                 onMoveRateChange = { preset -> container.setTelescopeMoveRatePreset(preset) },
                 onStopAllMotion = { container.stopAllTelescopeMotion() },
-                onBack = goBack,
-                onOpenSettings = { showSettings = true },
-                onOpenPhoneCalibration = { showPhoneCalibration = true },
+                menu = menuActions,
+                onExit = { showAlignment = false },
                 modifier = Modifier.fillMaxSize(),
             )
 
@@ -247,6 +263,31 @@ fun GuiderApp(container: AppContainer, onExitApp: () -> Unit = {}) {
                     modifier = Modifier.fillMaxSize(),
                 )
             }
+
+            // Matched ahead of guidance and the wizard: Search opens *over* whichever screen
+            // launched it and its result lands back on that same screen, so selecting a result only
+            // marks the target and closes Search -- the `when` then falls through to whatever was
+            // underneath, guidance included (which re-reads selectedTarget every composition).
+            showSearch -> SearchScreen(
+                catalogRepository = container.catalogRepository,
+                magnitudeLimit = magnitudeLimit,
+                onMagnitudeLimitChange = { container.preferences.setMagnitudeLimit(it) },
+                query = searchQuery,
+                onQueryChange = { searchQuery = it },
+                category = searchCategory,
+                onCategoryChange = { searchCategory = it },
+                onSelectResult = { target ->
+                    selectedTarget = target
+                    container.preferences.setLastTargetId(target.id)
+                    if (location != null) {
+                        val horizontal = target.currentHorizontal(location, currentEpochMillis())
+                        searchViewport = searchViewport.copy(centerAzimuth = horizontal.azimuth, centerAltitude = horizontal.altitude)
+                    }
+                    showSearch = false
+                },
+                onBack = goBack,
+                modifier = Modifier.fillMaxSize(),
+            )
 
             showNightWizardOptions && location != null -> NightWizardOptionsScreen(
                 catalogRepository = container.catalogRepository,
@@ -307,23 +348,20 @@ fun GuiderApp(container: AppContainer, onExitApp: () -> Unit = {}) {
                     location = location,
                     catalogRepository = container.catalogRepository,
                     onTargetToleranceDegrees = toleranceDegrees,
-                    onSyncOnThisObject = { container.syncOnObject(target, currentEpochMillis()) },
-                    onPlateSolve = { container.attemptPlateSolve() },
-                    onApplyPlateSolve = { attempt -> container.applyPlateSolve(attempt) },
-                    onOpenAlignment = { isGuiding = false; showAlignment = true },
-                    onOpenSettings = { showSettings = true },
+                    onAutoPlateSolveActive = { active -> container.setAutoPlateSolveActive(active) },
+                    menu = menuActions,
+                    onOpenSearch = { showSearch = true },
                     onExitGuiding = { if (wizardObjects != null) cancelWizard() else isGuiding = false },
                     onGoto = { container.slewTelescopeTo(target, currentEpochMillis()) },
                     onAbortSlew = { container.abortTelescopeSlew() },
-                    guidingMode = guidingMode,
-                    onGuidingModeChange = { container.setGuidingMode(it) },
-                    isTelescopeConnected = isTelescopeConnected,
                     slewRatePreset = slewRatePreset,
                     onSlewRatePresetChange = { container.setSlewRatePreset(it) },
                     onReadTracking = { container.readTelescopeTracking() },
                     onSetTracking = { container.setTelescopeTracking(it) },
                     showObjectPhotos = showObjectImages,
+                    dimBelowHorizon = dimBelowHorizon,
                     mapObjectFilter = mapObjectFilter,
+                    onMapObjectFilterChange = { container.preferences.setMapObjectFilter(it) },
                     wizardProgress = wizardObjects?.let { (nightWizardIndex + 1) to it.size },
                     onNextObject = {
                         if (wizardObjects != null) {
@@ -347,36 +385,12 @@ fun GuiderApp(container: AppContainer, onExitApp: () -> Unit = {}) {
                 )
             }
 
-            showSearch -> SearchScreen(
-                catalogRepository = container.catalogRepository,
-                magnitudeLimit = magnitudeLimit,
-                onMagnitudeLimitChange = { container.preferences.setMagnitudeLimit(it) },
-                query = searchQuery,
-                onQueryChange = { searchQuery = it },
-                category = searchCategory,
-                onCategoryChange = { searchCategory = it },
-                onSelectResult = { target ->
-                    selectedTarget = target
-                    container.preferences.setLastTargetId(target.id)
-                    if (location != null) {
-                        val horizontal = target.currentHorizontal(location, currentEpochMillis())
-                        searchViewport = searchViewport.copy(centerAzimuth = horizontal.azimuth, centerAltitude = horizontal.altitude)
-                    }
-                    showSearch = false
-                },
-                onBack = goBack,
-                modifier = Modifier.fillMaxSize(),
-            )
-
             else -> MapScreen(
                 catalogRepository = container.catalogRepository,
                 location = location,
                 pointingSource = container.activePointingSource,
                 telescopeDirection = telescopeDirection,
-                isStarAligned = isStarAligned,
-                isTelescopeConnected = isTelescopeConnected,
-                guidingMode = guidingMode,
-                onGuidingModeChange = { container.setGuidingMode(it) },
+                menu = menuActions,
                 selectedTarget = selectedTarget,
                 onSelectTarget = { target ->
                     selectedTarget = target
@@ -386,13 +400,10 @@ fun GuiderApp(container: AppContainer, onExitApp: () -> Unit = {}) {
                 viewport = searchViewport,
                 onViewportChange = { searchViewport = it },
                 showObjectPhotos = showObjectImages,
+                dimBelowHorizon = dimBelowHorizon,
                 mapObjectFilter = mapObjectFilter,
                 onMapObjectFilterChange = { container.preferences.setMapObjectFilter(it) },
                 onOpenSearch = { showSearch = true },
-                onOpenSettings = { showSettings = true },
-                onOpenAlignment = { showAlignment = true },
-                onOpenNightWizard = { showNightWizardOptions = true },
-                onOpenTelescope = { showTelescope = true },
                 onExitApp = onExitApp,
                 modifier = Modifier.fillMaxSize(),
             )

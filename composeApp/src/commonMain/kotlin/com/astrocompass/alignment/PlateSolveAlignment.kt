@@ -14,9 +14,11 @@ private const val MIN_MATCHED_STARS = 2
 /**
  * Derives [AlignmentModel.sensorToSky] directly from a single plate-solved photo, rather than
  * from 2-3 manual star syncs. A plate solve already measures a complete 3-DOF camera-to-sky
- * rotation from its matched stars, so -- unlike [AlignmentSolver.resync], which can only recover
- * yaw from a single manual sync -- one photo is enough to redo the *whole* fit, mounting offset
- * and all, with no dependency on any previous model.
+ * rotation from its matched stars, so one photo is enough to fit the *whole* rotation, mounting
+ * offset and all, with no dependency on any previous model -- which is what lets a camera setup
+ * skip star alignment entirely, and what
+ * [AutoPlateSolveRefiner][com.astrocompass.guiding.AutoPlateSolveRefiner] repeats in the
+ * background while guiding.
  *
  * Kept separate from [AlignmentSolver] rather than added to it: this is the one place in
  * `alignment` that needs [ObserverLocation] and sidereal time, to convert each matched star's
